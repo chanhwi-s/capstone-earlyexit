@@ -4,7 +4,7 @@ import torch.optim as optim
 
 from torch.utils.tensorboard import SummaryWriter
 
-from models.model import resnet18
+from models.resnet18 import resnet18
 from datasets.dataloader import get_dataloader
 from engine.trainer import train_one_epoch, evaluate
 from utils.experiment import create_experiment_dir
