@@ -1,0 +1,44 @@
+absl-py==2.4.0
+brotlicffi @ file:///opt/miniconda3/conda-bld/brotlicffi_1764961161728/work
+certifi @ file:///Users/ec2-user/croot/certifi_1767659142737/work/certifi
+cffi @ file:///opt/miniconda3/conda-bld/cffi_1761832772717/work
+charset-normalizer @ file:///opt/miniconda3/conda-bld/charset-normalizer_1761744841364/work
+contourpy==1.3.2
+cycler==0.12.1
+filelock @ file:///Users/ec2-user/croot/filelock_1769440497507/work
+fonttools==4.61.1
+gmpy2 @ file:///opt/miniconda3/conda-bld/gmpy2_1764747893574/work
+grpcio==1.78.0
+idna @ file:///opt/miniconda3/conda-bld/idna_1761912002779/work
+Jinja2 @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_2cnn4kenrm/croot/jinja2_1741710859444/work
+joblib==1.5.3
+kiwisolver==1.4.9
+Markdown==3.10.2
+MarkupSafe @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_1f_uj4vxik/croot/markupsafe_1738584045311/work
+matplotlib==3.10.8
+mpmath @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_17iu6a8a3m/croot/mpmath_1690848269369/work
+networkx @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_e6lt1dcyid/croot/networkx_1737040482044/work
+numpy @ file:///opt/miniconda3/conda-bld/numpy_and_numpy_base_1761579345363/work/dist/numpy-2.2.5-cp310-cp310-macosx_12_0_arm64.whl#sha256=cee7bef98ac83b78786789b80f44469231df1e3cf12ce327f909aa4ea0fcee88
+packaging @ file:///opt/miniconda3/conda-bld/packaging_1761049079158/work
+pillow @ file:///Users/ec2-user/croot/pillow_1772475245795/work
+protobuf==7.34.0
+pycparser @ file:///opt/miniconda3/conda-bld/pycparser_1757496094255/work
+pyparsing==3.3.2
+PySocks @ file:///opt/miniconda3/conda-bld/pysocks_1761753011241/work
+python-dateutil==2.9.0.post0
+PyYAML @ file:///opt/miniconda3/conda-bld/pyyaml_1763465492983/work
+requests @ file:///opt/miniconda3/conda-bld/requests_1762359594551/work
+scikit-learn==1.7.2
+scipy==1.15.3
+six==1.17.0
+sympy @ file:///opt/miniconda3/conda-bld/sympy_1764763032713/work
+tensorboard==2.20.0
+tensorboard-data-server==0.7.2
+threadpoolctl==3.6.0
+torch==2.5.1
+torchaudio==2.5.1
+torchvision==0.20.1
+tqdm==4.67.3
+typing_extensions @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_dffmcwqo6o/croot/typing_extensions_1756281471323/work
+urllib3 @ file:///Users/ec2-user/croot/urllib3_1767810408374/work
+Werkzeug==3.1.6

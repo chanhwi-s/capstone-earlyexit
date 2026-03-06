@@ -1,0 +1,35 @@
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# datasets
+data/
+
+# experiments
+experiments/
+
+# tensorboard
+runs/
+tensorboard/
+
+# model checkpoints
+*.pth
+*.pt
+
+# mac
+.DS_Store
+
+# vscode
+.vscode/
+
+# logs
+*.log
+
+# docker
+*.tar
+
+# build
+build/
+dist/
