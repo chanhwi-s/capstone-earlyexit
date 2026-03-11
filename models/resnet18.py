@@ -155,7 +155,10 @@ class ResNet(nn.Module):
         layers = []
         """
         각 residual layer의 첫번째 block에서는 downsample 여부에 따라 layer 추가
-        ResNet18 기준 layer2, 3, 4에서 적용됨
+        ResNet18 기준
+        layer1에서는 모두 3x3 conv, stride=1, padding=1, downsample=None인 block 4개 추가,
+        layer2,3,4에서는 첫번째는 3x3 conv, stride=2, padding=1, downsample= 1x1 conv, stride=2 block 1개 추가 후
+        3x3 conv, stride=1, padding=1, downsample=None인 block 3개 추가
         """
         layers.append(block(self.in_planes, planes, stride, downsample))
         
