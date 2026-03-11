@@ -7,6 +7,9 @@ train:
   batch_size: 128
   epochs: 10
   seed: 42
+  w1: 0.3
+  w2: 0.3
+  w3: 1.0
 
 optimizer:
   lr: 0.01

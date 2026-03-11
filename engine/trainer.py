@@ -1,12 +1,18 @@
 import torch
 from utils.metrics import accuracy
 
-def train_one_epoch(model, loader, optimizer, criterion, device):
+def train_one_epoch(model, loader, optimizer, criterion, device, weights=(0.3, 0.3, 1.0)):
 
     model.train()
 
     total_loss = 0
-    total_acc = 0
+    total = 0
+    
+    w1, w2, w3 = weights
+
+    correct1 = 0
+    correct2 = 0
+    correct3 = 0
 
     for images, labels in loader:
         images = images.to(device)
@@ -14,18 +20,36 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
 
         optimizer.zero_grad()
 
-        outputs = model(images)
+        out1, out2, out_final = model(images)
 
-        loss = criterion(outputs, labels)
+        loss1 = criterion(out1, labels)
+        loss2 = criterion(out2, labels)
+        loss3 = criterion(out_final, labels)        
+
+        loss = w1*loss1 + w2*loss2 + w3*loss3
 
         loss.backward()
-
         optimizer.step()
 
         total_loss += loss.item()
-        total_acc += accuracy(outputs, labels)
 
-    return total_loss/len(loader), total_acc/len(loader)
+        _, p1 = out1.max(1)
+        _, p2 = out2.max(1)
+        _, p3 = out_final.max(1)
+
+        correct1 += p1.eq(labels).sum().item()
+        correct2 += p2.eq(labels).sum().item()
+        correct3 += p3.eq(labels).sum().item()
+
+        total += labels.size(0)
+
+    
+    avg_loss = total_loss / len(loader)
+    acc1 = correct1 / total
+    acc2 = correct2 / total
+    acc3 = correct3 / total
+
+    return avg_loss, acc1, acc2, acc3
 
 
 def evaluate(model, loader, criterion, device):
