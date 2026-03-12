@@ -80,7 +80,7 @@ class ResNet(nn.Module):
             bias=False
         )
         self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=False)
 
         """
         3x3 maxpooling, stride=2, padding=1

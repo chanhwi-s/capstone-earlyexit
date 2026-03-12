@@ -17,6 +17,7 @@ tensorboard/
 # model checkpoints
 *.pth
 *.pt
+*.onnx
 
 # mac
 .DS_Store

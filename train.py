@@ -94,7 +94,7 @@ def train():
 
         print(
             f"Epoch {epoch+1}/{epochs} "
-            f"train_loss={train_loss:.4f} "
+            f"train_loss={train_loss:.4f}, ee1_acc={train_acc1:4f}, ee2_acc={train_acc2:4f}, final_acc={train_acc3:4f}"
         )
 
         writer.add_scalar("train/loss", train_loss, epoch)
