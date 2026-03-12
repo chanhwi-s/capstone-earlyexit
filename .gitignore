@@ -19,6 +19,7 @@ runs/
 tensorboard/
 
 # model checkpoints
+/artifacts
 *.pth
 *.pt
 *.onnx

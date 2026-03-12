@@ -30,16 +30,11 @@ def export_pt_onnx():
         model,
         dummy_input,
         onnx_path,
-        export_params=True,
-        opset_version=17,
+        opset_version=18,
+        input_names=["input"],
+        output_names=["output"],
         do_constant_folding=True,
-        input_names=['input'],
-        output_names=['output'],
-        dynamic_axes={
-            'input': {0: 'batch_size'},
-            'output': {0: 'batch_size'}
-        },
-        verbose=False
+        dynamo=True,   # 기본값이라 생략 가능
     )
 
     print(f"{onnx_path} 생성 완료")
