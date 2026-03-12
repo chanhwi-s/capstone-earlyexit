@@ -4,6 +4,10 @@ __pycache__/
 *.pyo
 *.pyd
 
+#env
+/cap6
+/cap10
+
 # datasets
 data/
 

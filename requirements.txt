@@ -1,7 +1,9 @@
-torch
-torchvision
-tensorboard
-PyYAML
-tqdm
-matplotlib
-onnx
+torch==2.5.0
+torchvision==0.20.0
+onnx==1.16.1
+tensorboard==2.17.1
+pyyaml==6.0.2
+tqdm==4.66.5
+matplotlib==3.9.2
+numpy<2.0  # 호환성
+pillow>=10.0
