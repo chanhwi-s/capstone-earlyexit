@@ -3,6 +3,7 @@
 현재 readme는 gpt가 작성한걸 단순 복붙하였습니다.
 
 ## Project Structure
+```text
 CAPSTONEDESIGN
 │
 ├── artifacts/                  # 학습 및 변환 결과물 저장
@@ -45,7 +46,7 @@ CAPSTONEDESIGN
 ├── main.py                  
 ├── requirements.txt
 └── README.md
-
+```
 
 ## Overview
 
