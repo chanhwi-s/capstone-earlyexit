@@ -1,11 +1,11 @@
 import torch
-from models.resnet18 import resnet18
-from models.resnet18_pt_ee import resnet18_pt_ee
+from src.models.resnet18 import resnet18
+from src.models.resnet18_pt_ee import resnet18_pt_ee
 
 model = resnet18(num_classes=1000)  # 또는 원하는 num_classes
 
-def onnx():
-    torch.save(model, 'resnet18_structure.pt')
+def export_models():
+    torch.save(model.state_dict(), '/artifactsresnet18_structure.pt')
     print("resnet18_structure.pt로 export되었습니다.")
 
     model.eval()
@@ -27,4 +27,4 @@ def onnx():
     print('resnet onnx 생성 완료')
 
 if __name__ == "__main__":
-    onnx()
+    export_models()
