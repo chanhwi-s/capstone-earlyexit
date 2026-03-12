@@ -1,6 +1,7 @@
-torch == 2.5.1
-torchvision == 0.20.1
-numpy == 2.2.5
-tensorboard == 2.20.0
-pyyaml == 6.0.3
-tqdm == 4.67.3
+torch
+torchvision
+tensorboard
+PyYAML
+tqdm
+matplotlib
+onnx
