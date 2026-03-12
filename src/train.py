@@ -98,8 +98,9 @@ def train():
         )
 
         writer.add_scalar("train/loss", train_loss, epoch)
-        writer.add_scalar("train/acc ee1, ee2, ee3", train_acc1, train_acc2, train_acc3, epoch)
-        #writer.add_scalar("test/acc", test_acc, epoch)
+        writer.add_scalar("train/acc_exit1", train_acc1, epoch)
+        writer.add_scalar("train/acc_exit2", train_acc2, epoch)
+        writer.add_scalar("train/acc_final", train_acc3, epoch)        #writer.add_scalar("test/acc", test_acc, epoch)
 
         torch.save(
             model.state_dict(),
