@@ -4,7 +4,7 @@
 ```text
 CAPSTONE-EARLYEXIT/
 ├── artifacts/      
-├── export/
+├── scripts/
 │   ├── build_trt_engine.sh
 │   ├── export_pt_onnx.py
 │   └── run_trt_engine.sh
