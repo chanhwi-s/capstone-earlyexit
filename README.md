@@ -39,7 +39,7 @@ pip install -r requirements.txt
 ```
 ---
 ## run command
-###전체 파이프라인 한번에 실행하는 명령어
+### 전체 파이프라인 한번에 실행하는 명령어
 - pt, .onnx 변환 -> build trt engind -> tensorrt engine 실행 및 로그 저장
 ```bash
 ./pipeline.sh {model_name}
