@@ -1,15 +1,29 @@
 import os
+import sys
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, BASE_DIR)
+
 import torch
+import importlib
 
-from src.models.resnet18 import resnet18
-# from src.models.resnet18_pt_ee import resnet18_pt_ee
 
-def export_pt_onnx():
-    model = resnet18(num_classes=1000)
-    model_name = "plain_resnet18"
+def export_pt_onnx(model_name: str):
 
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    model_dir = os.path.join(base_dir, "artifacts", model_name)
+    try:
+        module = importlib.import_module(f"src.models.{model_name}")
+    except ModuleNotFoundError as e:
+        print(e)
+        print(f"Model file not found: src/models/{model_name}.py")
+        sys.exit(1)
+
+    if not hasattr(module, "build_model"):
+        print(f"{model_name}.py must define build_model()")
+        sys.exit(1)
+
+    model = module.build_model(num_classes=1000)
+
+    model_dir = os.path.join(BASE_DIR, "artifacts", model_name)
     os.makedirs(model_dir, exist_ok=True)
 
     pt_path = os.path.join(model_dir, "model.pt")
@@ -35,4 +49,8 @@ def export_pt_onnx():
 
 
 if __name__ == "__main__":
-    export_pt_onnx()
+    if len(sys.argv) < 2:
+        print("Usage: python export_pt_onnx.py <model_name>")
+        sys.exit(1)
+
+    export_pt_onnx(sys.argv[1])

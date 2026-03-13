@@ -2,35 +2,61 @@
 
 ## Project Structure
 ```text
-CAPSTONEDESIGN/
-├── artifacts/             # .pt, .onnx, trt 변환 결과 저장
-│
+CAPSTONE-EARLYEXIT/
+├── artifacts/      
 ├── export/
-│   ├── export_pt_onnx.py  # PyTorch → ONNX export script
-│   └── trt_build.sh       # ONNX → TensorRT engine build script
+│   ├── build_trt_engine.sh
+│   ├── export_pt_onnx.py
+│   └── run_trt_engine.sh
+│
+├── results/
 │
 ├── src/
-│   ├── models/
-│   │   ├── resnet18.py
-│   │   └── resnet18_pt_ee.py
+│   ├── configs/
 │   ├── datasets/
 │   ├── engine/
-│   ├── configs/        
-│   ├── experiments/
+│   ├── models/
+│   │   ├── ee_resnet18.py
+│   │   └── plain_resnet18.py
 │   ├── utils/
 │   └── train.py
 │
 ├── main.py
+├── pipeline.sh
 ├── requirements.txt
-└── README.md
+├── README.md
+└── .gitignore
+```
+
+
+---
+## 환경 셋팅
+```bash
+python3.10 -m venv {환경이름}
+source {환경이름}/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 ---
 ## run command
-### 1. .pt, .onnx 변환
-python -m export.export_pt_onnx
+###전체 파이프라인 한번에 실행하는 명령어
+- pt, .onnx 변환 -> build trt engind -> tensorrt engine 실행 및 로그 저장
+```bash
+./pipeline.sh {model_name}
+```
 
-### 2. tensorrt 변환
-./export/trt_build.sh {model_name} {precision}
+### 개별 실행 방법은....  
+- pt, .onnx 변환
+```bash
+python -m export.export_pt_onnx {model_name}
+```
 
-### 3. tensorrt engine(runtime) 실행
-export/run_trt_engine.sh artifacts/{model_name}/{precision}.engine {precision}_runtime
+- tensorrt 변환
+```bash
+./export/trt_build.sh {model_name}
+```
+
+- tensorrt engine(runtime) 실행
+```bash
+./export/run_trt_engine.sh {model_name}
+```

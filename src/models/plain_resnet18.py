@@ -190,7 +190,7 @@ class ResNet(nn.Module):
 
         return x
     
-def resnet18(num_classes=1000):
+def build_model(num_classes=1000):
     return ResNet(
         BasicBlock,
         [2,2,2,2],
