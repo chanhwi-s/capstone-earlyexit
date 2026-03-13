@@ -23,4 +23,17 @@ CAPSTONEDESIGN/
 ├── main.py
 ├── requirements.txt
 └── README.md
+<<<<<<< HEAD
 ```
+=======
+
+
+### .pt, .onnx 변환
+python -m export.export_pt_onnx
+
+### tensorrt 변환
+./export/trt_build.sh {model_name} {precision}
+
+### tensorrt engine(runtime) 실행
+export/run_trt_engine.sh artifacts/{model_name}/{precision}.engine {precision}_runtime
+>>>>>>> 51243d2 (feat: tensorrt profile, engine 실행 script 추가)

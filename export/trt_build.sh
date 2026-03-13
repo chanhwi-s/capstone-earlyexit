@@ -30,7 +30,7 @@ for PRECISION in "${PRECISIONS[@]}"
 do
     ENGINE_PATH="${MODEL_DIR}/${PRECISION}.engine"
     JSON_PATH="${MODEL_DIR}/${PRECISION}.json"
-    LOG_PATH="${MODEL_DIR}/build_${PRECISION}.log"
+    LOG_PATH="${MODEL_DIR}/${PRECISION}_build.log"
 
     PRECISION_FLAG=""
 
