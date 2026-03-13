@@ -13,19 +13,19 @@ PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 echo "====================================="
 echo "Step 1: Export Pytorch model to .pt, .onnx"
 echo "====================================="
-python ${PROJECT_ROOT}/export/export_pt_onnx.py $MODEL_NAME || exit 1
+python ${PROJECT_ROOT}/scripts/export_pt_onnx.py $MODEL_NAME || exit 1
 
 echo ""
 echo "====================================="
 echo "Step 2: Build TensorRT Engines"
 echo "====================================="
-bash ${PROJECT_ROOT}/export/build_trt_engine.sh $MODEL_NAME || exit 1
+bash ${PROJECT_ROOT}/scripts/build_trt_engine.sh $MODEL_NAME || exit 1
 
 echo ""
 echo "====================================="
 echo "Step 3: Run Engines"
 echo "====================================="
-bash ${PROJECT_ROOT}/export/run_trt_engine.sh $MODEL_NAME || exit 1
+bash ${PROJECT_ROOT}/scripts/run_trt_engine.sh $MODEL_NAME || exit 1
 
 echo ""
 echo "====================================="

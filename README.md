@@ -48,15 +48,15 @@ pip install -r requirements.txt
 ### 개별 실행 방법은....  
 - pt, .onnx 변환
 ```bash
-python -m export.export_pt_onnx {model_name}
+python -m scripts.export_pt_onnx {model_name}
 ```
 
 - tensorrt 변환
 ```bash
-./export/trt_build.sh {model_name}
+./scripts/trt_build.sh {model_name}
 ```
 
 - tensorrt engine(runtime) 실행
 ```bash
-./export/run_trt_engine.sh {model_name}
+./scripts/run_trt_engine.sh {model_name}
 ```
