@@ -7,7 +7,7 @@ if [ -z "$MODEL_NAME" ]; then
     exit 1
 fi
 
-CONFIG_PATH="config.yaml"
+CONFIG_PATH="configs.yaml"
 MODEL_DIR="artifacts/${MODEL_NAME}"
 ONNX_PATH="${MODEL_DIR}/model.onnx"
 
@@ -21,18 +21,26 @@ if [ ! -f "$ONNX_PATH" ]; then
     exit 1
 fi
 
-DEVICES=($(yq '.build.devices[]' $CONFIG_PATH))
-PRECISIONS=($(yq '.build.precisions[]' $CONFIG_PATH))
+# -----------------------------
+# YAML → 환경변수 (Python 사용)
+# -----------------------------
+eval $(python3 - <<EOF
+import yaml
+cfg = yaml.safe_load(open("${CONFIG_PATH}"))
 
-DLA_CORE=$(yq '.build.dla_core' $CONFIG_PATH)
-ALLOW_FALLBACK=$(yq '.build.allow_gpu_fallback' $CONFIG_PATH)
-WORKSPACE=$(yq '.build.workspace' $CONFIG_PATH)
-OPT_LEVEL=$(yq '.build.opt_level' $CONFIG_PATH)
-USE_CUDA_GRAPH=$(yq '.build.use_cuda_graph' $CONFIG_PATH)
+print("DEVICES=\"" + " ".join(cfg["build"]["devices"]) + "\"")
+print("PRECISIONS=\"" + " ".join(cfg["build"]["precisions"]) + "\"")
+print("DLA_CORE=" + str(cfg["build"]["dla_core"]))
+print("ALLOW_FALLBACK=" + str(cfg["build"]["allow_gpu_fallback"]).lower())
+print("WORKSPACE=" + str(cfg["build"]["workspace"]))
+print("OPT_LEVEL=" + str(cfg["build"]["opt_level"]))
+print("USE_CUDA_GRAPH=" + str(cfg["build"]["use_cuda_graph"]).lower())
+EOF
+)
 
-for DEVICE in "${DEVICES[@]}"
+for DEVICE in $DEVICES
 do
-  for PRECISION in "${PRECISIONS[@]}"
+  for PRECISION in $PRECISIONS
   do
       DIR_NAME="${DEVICE}_${PRECISION}"
       TARGET_DIR="${MODEL_DIR}/${DIR_NAME}"
@@ -67,8 +75,8 @@ do
       echo "========================================="
 
       trtexec \
-        --onnx=$ONNX_PATH \
-        --saveEngine=$ENGINE_PATH \
+        --onnx="$ONNX_PATH" \
+        --saveEngine="$ENGINE_PATH" \
         $PREC_FLAG \
         $DEVICE_FLAG \
         --memPoolSize=workspace:${WORKSPACE} \
@@ -77,9 +85,9 @@ do
         --profilingVerbosity=detailed \
         --dumpProfile \
         --separateProfileRun \
-        --exportProfile=$PROFILE_PATH \
+        --exportProfile="$PROFILE_PATH" \
         $CUDA_GRAPH_FLAG \
-        2>&1 | tee $LOG_PATH
+        2>&1 | tee "$LOG_PATH"
 
   done
 done

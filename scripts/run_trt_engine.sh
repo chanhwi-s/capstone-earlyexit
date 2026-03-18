@@ -7,7 +7,7 @@ if [ -z "$MODEL_NAME" ]; then
   exit 1
 fi
 
-CONFIG_PATH="config.yaml"
+CONFIG_PATH="configs.yaml"
 BASE_DIR="artifacts/${MODEL_NAME}"
 METRIC_PATH="${BASE_DIR}/metric.txt"
 
@@ -21,23 +21,31 @@ if [ ! -d "$BASE_DIR" ]; then
   exit 1
 fi
 
-ITER=$(yq '.run.iterations' $CONFIG_PATH)
-WARMUP=$(yq '.run.warmup' $CONFIG_PATH)
-STREAMS=$(yq '.run.streams' $CONFIG_PATH)
+# -----------------------------
+# YAML → 환경변수
+# -----------------------------
+eval $(python3 - <<EOF
+import yaml
+cfg = yaml.safe_load(open("${CONFIG_PATH}"))
+
+print("ITER=" + str(cfg["run"]["iterations"]))
+print("WARMUP=" + str(cfg["run"]["warmup"]))
+print("STREAMS=" + str(cfg["run"]["streams"]))
+print("DEVICES=\"" + " ".join(cfg["build"]["devices"]) + "\"")
+print("PRECISIONS=\"" + " ".join(cfg["build"]["precisions"]) + "\"")
+EOF
+)
 
 echo "Model: ${MODEL_NAME}" > "$METRIC_PATH"
 echo "=========================================" >> "$METRIC_PATH"
 echo "" >> "$METRIC_PATH"
 
-DEVICES=($(yq '.build.devices[]' $CONFIG_PATH))
-PRECISIONS=($(yq '.build.precisions[]' $CONFIG_PATH))
-
-for DEVICE in "${DEVICES[@]}"
+for DEVICE in $DEVICES
 do
   echo "[${DEVICE}]" >> "$METRIC_PATH"
   echo "" >> "$METRIC_PATH"
 
-  for PRECISION in "${PRECISIONS[@]}"
+  for PRECISION in $PRECISIONS
   do
     TARGET_DIR="${BASE_DIR}/${DEVICE}_${PRECISION}"
     ENGINE_PATH="${TARGET_DIR}/model.engine"
@@ -81,7 +89,9 @@ do
       | sqrt
     ' "$JSON_PATH")
 
-    TRT_THROUGHPUT=$(grep "Throughput" "$LOG_PATH" | tail -n 1 | awk '{print $3}')
+    TRT_THROUGHPUT=$(grep "Throughput" "$LOG_PATH" | \
+      awk -F'Throughput: ' '{print $2}' | \
+      awk '{print $1}' | tail -n 1)
 
     GPU_UTIL=$(grep "GR3D_FREQ" "$TEGRA_LOG" | \
       awk -F'GR3D_FREQ ' '{print $2}' | \
@@ -96,11 +106,17 @@ do
       awk -F'/' '{print $1}' | \
       awk '{sum+=$1; n++} END {if(n>0) print sum/n; else print 0}')
 
-    AVG_POWER=$(grep "POM_5V_GPU" "$TEGRA_LOG" | \
-      awk -F'POM_5V_GPU ' '{print $2}' | \
+    AVG_POWER=$(grep "VDD_GPU_SOC" "$TEGRA_LOG" | \
+      awk -F'VDD_GPU_SOC ' '{print $2}' | \
       awk -F'mW' '{sum+=$1; n++} END {if(n>0) print sum/n/1000; else print 0}')
 
-    PERF_PER_WATT=$(awk "BEGIN {if(${AVG_POWER}>0) print ${TRT_THROUGHPUT}/${AVG_POWER}; else print 0}")
+    TRT_THROUGHPUT=${TRT_THROUGHPUT:-0}
+    AVG_POWER=${AVG_POWER:-0}
+
+    PERF_PER_WATT=$(awk -v q="$TRT_THROUGHPUT" -v p="$AVG_POWER" \
+    'BEGIN { if(p>0) print q/p; else print 0 }')
+
+    #PERF_PER_WATT=$(awk "BEGIN {if(${AVG_POWER}>0) print ${TRT_THROUGHPUT}/${AVG_POWER}; else print 0}")
 
     {
       echo "  ${PRECISION}"
@@ -118,7 +134,6 @@ do
     } >> "$METRIC_PATH"
 
   done
-
 done
 
 echo "All runs completed."
