@@ -49,7 +49,7 @@ do
       ENGINE_PATH="${TARGET_DIR}/model.engine"
       LOG_PATH="${TARGET_DIR}/build_verbose.log"
       PROFILE_PATH="${TARGET_DIR}/layer_profile.json"
-      LAYERINFO_PATH="${TARGET_DIR}/build_layer_device.json"
+      LAYERINFO_PATH="${TARGET_DIR}/build_layer_profile.json"
 
       PREC_FLAG=""
       if [ "$PRECISION" = "fp16" ]; then
@@ -82,9 +82,12 @@ do
         $DEVICE_FLAG \
         --memPoolSize=workspace:${WORKSPACE} \
         --builderOptimizationLevel=${OPT_LEVEL} \
+        --verbose \
+        --profilingVerbosity=detailed \
         --dumpProfile \
-        --exportLayerInfo="$LAYERINFO_PATH" \
+        --separateProfileRun \
         --exportProfile="$PROFILE_PATH" \
+        --exportLayerInfo="$LAYERINFO_PATH" \
         $CUDA_GRAPH_FLAG \
         2>&1 | tee "$LOG_PATH"
 

@@ -57,7 +57,6 @@ do
     LOG_PATH="${TARGET_DIR}/run.log"
     JSON_PATH="${TARGET_DIR}/times.json"
     TEGRA_LOG="${TARGET_DIR}/tegrastats.log"
-    RUNTIME_LAYERINFO_PATH="${TARGET_DIR}/run_layer_device.json"
 
     echo "Running ${DEVICE}_${PRECISION}..."
 
@@ -71,7 +70,6 @@ do
       --warmUp=${WARMUP} \
       --streams=${STREAMS} \
       --exportTimes="$JSON_PATH" \
-      --exportLayerInfo="$RUNTIME_LAYERINFO_PATH" \
       > "$LOG_PATH" 2>&1
 
     sleep 1
