@@ -57,6 +57,7 @@ do
     LOG_PATH="${TARGET_DIR}/run.log"
     JSON_PATH="${TARGET_DIR}/times.json"
     TEGRA_LOG="${TARGET_DIR}/tegrastats.log"
+    RUNTIME_LAYERINFO_PATH="${TARGET_DIR}/run_layer_device.json"
 
     echo "Running ${DEVICE}_${PRECISION}..."
 
@@ -70,6 +71,7 @@ do
       --warmUp=${WARMUP} \
       --streams=${STREAMS} \
       --exportTimes="$JSON_PATH" \
+      --exportLayerInfo="$RUNTIME_LAYERINFO_PATH" \
       > "$LOG_PATH" 2>&1
 
     sleep 1
@@ -89,9 +91,7 @@ do
       | sqrt
     ' "$JSON_PATH")
 
-    TRT_THROUGHPUT=$(grep "Throughput" "$LOG_PATH" | \
-      awk -F'Throughput: ' '{print $2}' | \
-      awk '{print $1}' | tail -n 1)
+    TRT_THROUGHPUT=$(grep "\[I\] Throughput" "$LOG_PATH" | head -n1 | awk -F'Throughput: ' '{print $2}' | awk '{print $1}')
 
     GPU_UTIL=$(grep "GR3D_FREQ" "$TEGRA_LOG" | \
       awk -F'GR3D_FREQ ' '{print $2}' | \
@@ -116,7 +116,7 @@ do
     PERF_PER_WATT=$(awk -v q="$TRT_THROUGHPUT" -v p="$AVG_POWER" \
     'BEGIN { if(p>0) print q/p; else print 0 }')
 
-    #PERF_PER_WATT=$(awk "BEGIN {if(${AVG_POWER}>0) print ${TRT_THROUGHPUT}/${AVG_POWER}; else print 0}")
+    FALLBACK_COUNT=$(grep -i "falling back to GPU" "$LOG_PATH" | wc -l)
 
     {
       echo "  ${PRECISION}"
@@ -130,6 +130,7 @@ do
       echo "    Avg RAM (MB): ${AVG_RAM}"
       echo "    Avg GPU Power (W): ${AVG_POWER}"
       echo "    Perf/Watt: ${PERF_PER_WATT}"
+      echo "    Fallback Count: ${FALLBACK_COUNT}"
       echo ""
     } >> "$METRIC_PATH"
 
