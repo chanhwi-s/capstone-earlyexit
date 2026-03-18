@@ -65,7 +65,8 @@ class ResNet18_PT_EE(nn.Module):
 
         return [out_ee1, out_ee2, out_main]
 
-def resnet18_pt_ee(num_classes=10):
+def build_model(num_classes=1000):
     return ResNet18_PT_EE(
         num_classes=num_classes,
         freeze_backbone=True)
+
