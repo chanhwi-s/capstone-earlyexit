@@ -3,65 +3,122 @@
 MODEL_NAME=$1
 
 if [ -z "$MODEL_NAME" ]; then
-  echo "Usage: bash run_engine.sh <model_name>"
+  echo "Usage: bash run_trt_engine.sh <model_name>"
   exit 1
 fi
 
-BASE_DIR=artifacts/${MODEL_NAME}
+CONFIG_PATH="config.yaml"
+BASE_DIR="artifacts/${MODEL_NAME}"
+METRIC_PATH="${BASE_DIR}/metric.txt"
+
+if [ ! -f "$CONFIG_PATH" ]; then
+  echo "Config not found: $CONFIG_PATH"
+  exit 1
+fi
 
 if [ ! -d "$BASE_DIR" ]; then
   echo "Model directory not found: $BASE_DIR"
   exit 1
 fi
 
-echo "Running engines for model: $MODEL_NAME"
-echo "Base directory: $BASE_DIR"
-echo ""
+ITER=$(yq '.run.iterations' $CONFIG_PATH)
+WARMUP=$(yq '.run.warmup' $CONFIG_PATH)
+STREAMS=$(yq '.run.streams' $CONFIG_PATH)
 
-for PREC_DIR in ${BASE_DIR}/*; do
-  if [ -d "$PREC_DIR" ]; then
+echo "Model: ${MODEL_NAME}" > "$METRIC_PATH"
+echo "=========================================" >> "$METRIC_PATH"
+echo "" >> "$METRIC_PATH"
 
-    ENGINE_PATH=$(find "$PREC_DIR" -maxdepth 1 -name "*.engine" | head -n 1)
+DEVICES=($(yq '.build.devices[]' $CONFIG_PATH))
+PRECISIONS=($(yq '.build.precisions[]' $CONFIG_PATH))
 
-    if [ -z "$ENGINE_PATH" ]; then
-      echo "No engine found in $PREC_DIR"
+for DEVICE in "${DEVICES[@]}"
+do
+  echo "[${DEVICE}]" >> "$METRIC_PATH"
+  echo "" >> "$METRIC_PATH"
+
+  for PRECISION in "${PRECISIONS[@]}"
+  do
+    TARGET_DIR="${BASE_DIR}/${DEVICE}_${PRECISION}"
+    ENGINE_PATH="${TARGET_DIR}/model.engine"
+
+    if [ ! -f "$ENGINE_PATH" ]; then
       continue
     fi
 
-    LOG_PATH="${PREC_DIR}/run.log"
-    JSON_PATH="${PREC_DIR}/times.json"
-    METRIC_PATH="${PREC_DIR}/metrics.txt"
+    LOG_PATH="${TARGET_DIR}/run.log"
+    JSON_PATH="${TARGET_DIR}/times.json"
+    TEGRA_LOG="${TARGET_DIR}/tegrastats.log"
 
-    echo "---------------------------------------"
-    echo "Precision dir : $PREC_DIR"
-    echo "Engine        : $ENGINE_PATH"
-    echo ""
+    echo "Running ${DEVICE}_${PRECISION}..."
+
+    tegrastats --interval 100 --logfile "$TEGRA_LOG" &
+    TEGRA_PID=$!
+    sleep 1
 
     trtexec \
       --loadEngine="$ENGINE_PATH" \
-      --iterations=200 \
-      --warmUp=20 \
+      --iterations=${ITER} \
+      --warmUp=${WARMUP} \
+      --streams=${STREAMS} \
       --exportTimes="$JSON_PATH" \
       > "$LOG_PATH" 2>&1
 
+    sleep 1
+    kill $TEGRA_PID 2>/dev/null
+
     if [ ! -f "$JSON_PATH" ]; then
-      echo "Timing JSON not generated."
       continue
     fi
 
-    # Average latency 계산
     AVG_LATENCY=$(jq '[.[].latencyMs] | add / length' "$JSON_PATH")
+    P95=$(jq '[.[].latencyMs] | sort | .[length*0.95|floor]' "$JSON_PATH")
+    P99=$(jq '[.[].latencyMs] | sort | .[length*0.99|floor]' "$JSON_PATH")
+    STD=$(jq '
+      ([.[].latencyMs] | add / length) as $mean
+      | [.[].latencyMs | pow(. - $mean;2)]
+      | add / length
+      | sqrt
+    ' "$JSON_PATH")
 
-    # Throughput (qps)
-    THROUGHPUT=$(awk "BEGIN {print 1000/$AVG_LATENCY}")
+    TRT_THROUGHPUT=$(grep "Throughput" "$LOG_PATH" | tail -n 1 | awk '{print $3}')
 
-    echo "Average Latency (ms): $AVG_LATENCY" > "$METRIC_PATH"
-    echo "Throughput (qps): $THROUGHPUT" >> "$METRIC_PATH"
+    GPU_UTIL=$(grep "GR3D_FREQ" "$TEGRA_LOG" | \
+      awk -F'GR3D_FREQ ' '{print $2}' | \
+      awk -F'%' '{sum+=$1; n++} END {if(n>0) print sum/n; else print 0}')
 
-    echo "Saved metrics to $METRIC_PATH"
-    echo ""
+    DLA_UTIL=$(grep "DLA0" "$TEGRA_LOG" | \
+      awk -F'DLA0 ' '{print $2}' | \
+      awk -F'%' '{sum+=$1; n++} END {if(n>0) print sum/n; else print 0}')
 
-  fi
+    AVG_RAM=$(grep "RAM" "$TEGRA_LOG" | \
+      awk -F'RAM ' '{print $2}' | \
+      awk -F'/' '{print $1}' | \
+      awk '{sum+=$1; n++} END {if(n>0) print sum/n; else print 0}')
+
+    AVG_POWER=$(grep "POM_5V_GPU" "$TEGRA_LOG" | \
+      awk -F'POM_5V_GPU ' '{print $2}' | \
+      awk -F'mW' '{sum+=$1; n++} END {if(n>0) print sum/n/1000; else print 0}')
+
+    PERF_PER_WATT=$(awk "BEGIN {if(${AVG_POWER}>0) print ${TRT_THROUGHPUT}/${AVG_POWER}; else print 0}")
+
+    {
+      echo "  ${PRECISION}"
+      echo "    Avg Latency (ms): ${AVG_LATENCY}"
+      echo "    P95 (ms): ${P95}"
+      echo "    P99 (ms): ${P99}"
+      echo "    Std Dev (ms): ${STD}"
+      echo "    QPS: ${TRT_THROUGHPUT}"
+      echo "    GPU Util (%): ${GPU_UTIL}"
+      echo "    DLA Util (%): ${DLA_UTIL}"
+      echo "    Avg RAM (MB): ${AVG_RAM}"
+      echo "    Avg GPU Power (W): ${AVG_POWER}"
+      echo "    Perf/Watt: ${PERF_PER_WATT}"
+      echo ""
+    } >> "$METRIC_PATH"
+
+  done
+
 done
 
 echo "All runs completed."
