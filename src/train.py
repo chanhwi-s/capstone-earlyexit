@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from models.ee_resnet18 import ResNet_EE
+from models.ee_resnet18 import build_model
 from datasets.dataloader import get_dataloader
 from engine.trainer import train_one_epoch, evaluate
 from utils import load_config, create_experiment_dir, set_seed, log_to_csv
@@ -60,7 +60,7 @@ def train():
         seed=seed
     )
 
-    model     = ResNet_EE(num_classes=num_classes).to(device)
+    model     = build_model(num_classes=num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
