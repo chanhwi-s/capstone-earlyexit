@@ -1,6 +1,6 @@
 dataset:
   name: cifar10
-  data_root: ./data
+  data_root: ../data
   num_workers: 2
 
 train:

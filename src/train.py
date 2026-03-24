@@ -4,13 +4,10 @@ import torch.optim as optim
 
 from torch.utils.tensorboard import SummaryWriter
 
-from models.resnet18 import resnet18
-from models.resnet18_pt_ee import resnet18_pt_ee
+from models.ee_resnet18 import ResNet18_PT_EE
 from datasets.dataloader import get_dataloader
-from engine.trainer import train_one_epoch, evaluate
-from utils.experiment import create_experiment_dir
-from utils.config import load_config
-from utils.seed import set_seed
+from engine.trainer import train_one_epoch
+from utils import load_config, create_experiment_dir, set_seed
 
 
 """
@@ -63,7 +60,7 @@ def train():
         num_workers=num_workers,
         seed=seed
     )
-    model = resnet18_pt_ee(num_classes=num_classes).to(device)
+    model = ResNet18_PT_EE(num_classes=num_classes).to(device)
 
     criterion = nn.CrossEntropyLoss()
 
@@ -76,12 +73,13 @@ def train():
 
     for epoch in range(epochs):
 
-        train_loss, train_acc1, train_acc2, train_acc3= train_one_epoch(
+        train_loss, train_acc1, train_acc2, train_acc3 = train_one_epoch(
             model,
             train_loader,
             optimizer,
             criterion,
-            device
+            device,
+            weights=weights
         )
         """
         test_loss, test_acc = evaluate(

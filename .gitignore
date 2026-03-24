@@ -39,3 +39,5 @@ tensorboard/
 # build
 build/
 dist/
+
+*pptx
