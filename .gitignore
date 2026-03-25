@@ -13,6 +13,7 @@ data/
 
 # experiments
 experiments/
+experiments_plain/
 
 # tensorboard
 runs/
