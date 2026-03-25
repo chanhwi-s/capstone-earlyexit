@@ -44,24 +44,48 @@ sys.path.insert(0, os.path.dirname(__file__))
 # ── tegrastats 모니터 ─────────────────────────────────────────────────────────
 
 def _parse_tegrastats_line(line: str) -> dict:
-    """tegrastats 한 줄을 파싱해 전력/GPU 사용률 반환."""
+    """tegrastats 한 줄을 파싱해 전력/GPU 사용률 반환.
+
+    Jetson AGX Orin 실제 포맷 (JetPack 6.x):
+      VDD_GPU_SOC 1600mW/1600mW  VDD_CPU_CV 0mW/0mW  VIN_SYS_5V0 2616mW/2616mW
+      형식: FIELD_NAME 현재값mW/평균값mW  → 현재값(첫 번째) 사용
+
+    이전 포맷 호환 (JetPack 5.x):
+      VDD_GPU_SOC 10340mW  TOT_PWR 16549mW  (슬래시 없음)
+    """
     result = {}
+
+    # 전력 파싱 헬퍼: "FIELD XmW/YmW" 또는 "FIELD XmW" 모두 처리 → 현재값 반환
+    def _pw(field):
+        m = re.search(rf'{field}\s+(\d+)\s*mW', line)
+        return int(m.group(1)) if m else None
+
     # GPU utilization: GR3D_FREQ 92%@1300  또는  GR3D_FREQ 92%
     m = re.search(r'GR3D_FREQ\s+(\d+)%', line)
     if m:
         result['gpu_util'] = int(m.group(1))
-    # Total power: TOT_PWR 16549mW
-    m = re.search(r'TOT_PWR\s+(\d+)mW', line)
-    if m:
-        result['tot_power_mw'] = int(m.group(1))
-    # GPU+SOC power: VDD_GPU_SOC 10340mW
-    m = re.search(r'VDD_GPU_SOC\s+(\d+)mW', line)
-    if m:
-        result['gpu_soc_power_mw'] = int(m.group(1))
-    # CPU+CV power: VDD_CPU_CV 1673mW
-    m = re.search(r'VDD_CPU_CV\s+(\d+)mW', line)
-    if m:
-        result['cpu_cv_power_mw'] = int(m.group(1))
+
+    # GPU+SOC 전력
+    v = _pw('VDD_GPU_SOC')
+    if v is not None:
+        result['gpu_soc_power_mw'] = v
+
+    # CPU+CV 전력
+    v = _pw('VDD_CPU_CV')
+    if v is not None:
+        result['cpu_cv_power_mw'] = v
+
+    # 총 전력: 우선순위 VIN_SYS_5V0 > TOT_PWR > VDD_IN > rail 합산
+    for field in ('VIN_SYS_5V0', 'TOT_PWR', 'VDD_IN'):
+        v = _pw(field)
+        if v is not None:
+            result['tot_power_mw'] = v
+            break
+    if 'tot_power_mw' not in result:
+        total = sum(result.get(k, 0) for k in ('gpu_soc_power_mw', 'cpu_cv_power_mw'))
+        if total > 0:
+            result['tot_power_mw'] = total
+
     return result if result else None
 
 
