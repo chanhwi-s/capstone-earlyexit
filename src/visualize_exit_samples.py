@@ -108,11 +108,11 @@ def collect_exit_samples(model, test_loader, threshold, device, max_per_exit=20)
     return exit_samples
 
 
-def plot_exit_samples(exit_samples, threshold, out_dir, cols=10):
+def plot_exit_samples(exit_samples, threshold, out_dir, cols=5):
     """
-    각 exit별 샘플 그리드 시각화
-    - 초록 테두리: 정답 맞춤
-    - 빨간 테두리: 오답
+    exit별로 별도 PNG 3장 저장
+    - 초록 테두리: 정답 맞춤 / 빨간 테두리: 오답
+    - 셀 크기 크게 (3" x 3.8" per cell)
     """
     exit_labels = {
         1: 'Exit 1 (EE1) — after layer2',
@@ -120,81 +120,84 @@ def plot_exit_samples(exit_samples, threshold, out_dir, cols=10):
         3: 'Exit 3 (Main) — after layer4',
     }
     exit_colors = {1: '#4C8EFF', 2: '#FF8C42', 3: '#4CAF50'}
+    cell_w, cell_h = 3.0, 3.8   # 인치 per cell
 
-    # 최대 샘플 수 기준으로 행 결정
-    max_samples = max(len(v) for v in exit_samples.values())
-    rows_per_exit = (max_samples + cols - 1) // cols
+    saved_paths = []
 
-    fig_rows = 3 * (rows_per_exit + 1)  # +1은 헤더용
-    fig, axes = plt.subplots(
-        3 * rows_per_exit + 3,
-        cols,
-        figsize=(cols * 1.6, 3 * rows_per_exit * 1.8 + 3)
-    )
-    fig.suptitle(f'Exit별 샘플 시각화  (threshold={threshold})', fontsize=14, y=1.01)
-
-    ax_row = 0
     for exit_idx in [1, 2, 3]:
         samples = exit_samples[exit_idx]
         color   = exit_colors[exit_idx]
         label   = exit_labels[exit_idx]
 
-        # 헤더 행
-        header_ax = axes[ax_row, 0]
-        for c in range(cols):
-            axes[ax_row, c].axis('off')
-        header_ax.text(
-            0, 0.5,
-            f'{label}\n({len(samples)} samples)',
-            fontsize=11, fontweight='bold', color=color,
-            va='center', ha='left', transform=header_ax.transAxes
-        )
-        ax_row += 1
+        if not samples:
+            print(f"[skip] Exit {exit_idx}: 샘플 없음")
+            continue
 
-        # 샘플 행
-        for sample_idx in range(rows_per_exit * cols):
-            row_in_block = sample_idx // cols
-            col_in_block = sample_idx % cols
-            ax = axes[ax_row + row_in_block, col_in_block]
+        n     = len(samples)
+        rows  = (n + cols - 1) // cols
+        fig_w = cols * cell_w
+        fig_h = rows * cell_h + 0.8   # 0.8: 상단 제목 여백
+
+        fig, axes = plt.subplots(rows, cols, figsize=(fig_w, fig_h))
+        fig.suptitle(
+            f'{label}  |  threshold={threshold}  |  {n} samples',
+            fontsize=15, fontweight='bold', color=color, y=1.01
+        )
+
+        # axes를 항상 2D 배열로
+        if rows == 1 and cols == 1:
+            axes = np.array([[axes]])
+        elif rows == 1:
+            axes = np.expand_dims(axes, 0)
+        elif cols == 1:
+            axes = np.expand_dims(axes, 1)
+
+        for idx in range(rows * cols):
+            r, c = divmod(idx, cols)
+            ax = axes[r, c]
             ax.axis('off')
 
-            if sample_idx >= len(samples):
+            if idx >= n:
                 continue
 
-            s     = samples[sample_idx]
-            img   = denormalize(s['image'])
+            s          = samples[idx]
+            img        = denormalize(s['image'])
             label_name = CIFAR10_CLASSES[s['label']]
             pred_name  = CIFAR10_CLASSES[s['pred']]
             is_correct = (s['label'] == s['pred'])
-            border_color = '#00C853' if is_correct else '#FF1744'
+            border_col = '#00C853' if is_correct else '#FF1744'
+            text_col   = '#007A30' if is_correct else '#CC0000'
 
-            ax.imshow(img, interpolation='nearest')
+            ax.imshow(img, interpolation='nearest', aspect='equal')
 
             # 테두리
             for spine in ax.spines.values():
-                spine.set_edgecolor(border_color)
-                spine.set_linewidth(3)
+                spine.set_edgecolor(border_col)
+                spine.set_linewidth(5)
                 spine.set_visible(True)
 
-            # 제목: pred / conf
-            title_color = '#00C853' if is_correct else '#FF1744'
+            # 상단: 예측 클래스 + confidence
             ax.set_title(
-                f'{pred_name}\n{s["conf"]:.2f}',
-                fontsize=6.5, color=title_color, pad=2
+                f'Pred: {pred_name}  ({s["conf"]:.3f})',
+                fontsize=11, color=text_col, pad=6, fontweight='bold'
             )
 
-            # 실제 정답을 틀린 경우 아래에 표시
-            if not is_correct:
-                ax.set_xlabel(f'GT:{label_name}', fontsize=5.5, color='gray', labelpad=1)
+            # 하단: GT 레이블
+            gt_color = 'dimgray' if is_correct else '#CC0000'
+            ax.set_xlabel(
+                f'GT: {label_name}',
+                fontsize=10, color=gt_color, labelpad=5
+            )
 
-        ax_row += rows_per_exit
+        plt.tight_layout(rect=[0, 0, 1, 0.98])
 
-    plt.tight_layout(rect=[0, 0, 1, 0.99])
+        save_path = os.path.join(out_dir, f'exit{exit_idx}_samples_thr{threshold:.2f}.png')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        saved_paths.append(save_path)
+        print(f"저장 완료: {save_path}")
 
-    save_path = os.path.join(out_dir, f'exit_samples_thr{threshold:.2f}.png')
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    print(f"저장 완료: {save_path}")
-    plt.show()
+    return saved_paths
 
 
 def print_exit_summary(exit_samples, threshold):
@@ -272,7 +275,10 @@ def main():
 
     # ── 시각화 ──
     out_dir = os.path.dirname(os.path.dirname(args.ckpt))
-    plot_exit_samples(exit_samples, args.threshold, out_dir, cols=args.cols)
+    saved = plot_exit_samples(exit_samples, args.threshold, out_dir, cols=args.cols)
+    print(f"\n총 {len(saved)}개 파일 저장:")
+    for p in saved:
+        print(f"  {p}")
 
 
 if __name__ == '__main__':
