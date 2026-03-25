@@ -35,23 +35,29 @@ ONNX_LAYER_COUNTS = {
 }
 
 
-def classify_layer(name: str) -> str:
-    """레이어 이름으로 타입 분류."""
+def classify_layer_by_type(layer_type: str, name: str) -> str:
+    """TRT LayerType 문자열로 분류 (IEngineInspector 용)."""
+    t = layer_type.lower()
     n = name.lower()
-    if 'myelin'    in n: return 'Myelin (GPU kernel fusion)'
+    # TRT 10.x LayerType 값들
+    if 'myelin'       in t or 'myelin'      in n: return 'Myelin (fused kernel)'
+    if 'pointwise'    in t:                        return 'PointWise (fused)'
+    if 'caskconv'     in t or 'caskconv'    in n: return 'CaskConv (fused)'
+    if 'convolution'  in t:                        return 'Convolution'
+    if 'activation'   in t:                        return 'Activation (ReLU 등)'
+    if 'elementwise'  in t:                        return 'ElementWise (Add/Residual)'
+    if 'pooling'      in t:                        return 'Pooling'
+    if 'fullyconnect' in t or 'gemm' in t:         return 'FC / GEMM'
+    if 'softmax'      in t:                        return 'Softmax'
+    if 'shuffle'      in t or 'reshape' in t:      return 'Reshape/Shuffle'
+    if 'reformat'     in t or 'reformat' in n:     return 'Reformat'
+    if 'scale'        in t:                        return 'Scale (BN)'
+    if 'concat'       in t:                        return 'Concat'
+    if layer_type:                                  return layer_type  # 원본 그대로
+    # layer_type 없으면 이름으로 fallback
+    if 'myelin'    in n: return 'Myelin (fused kernel)'
     if 'reformat'  in n: return 'Reformat'
-    if 'conv'      in n and 'relu' in n and ('bn' in n or 'norm' in n):
-        return 'Conv+BN+ReLU (fused)'
-    if 'conv'      in n and 'relu' in n: return 'Conv+ReLU (fused)'
-    if 'conv'      in n and ('bn' in n or 'norm' in n): return 'Conv+BN (fused)'
-    if 'conv'      in n: return 'Conv'
-    if 'gemm'      in n or 'matmul' in n or 'linear' in n: return 'FC/GEMM'
-    if 'pool'      in n: return 'Pooling'
-    if 'add'       in n or 'residual' in n or 'eltwise' in n: return 'ElementWise/Residual'
-    if 'relu'      in n or 'activation' in n: return 'Activation'
-    if 'softmax'   in n: return 'Softmax'
-    if 'flatten'   in n or 'reshape' in n: return 'Reshape/Flatten'
-    if 'concat'    in n: return 'Concat'
+    if 'conv'      in n: return 'Conv (name 기반)'
     return 'Other'
 
 
@@ -89,37 +95,56 @@ def inspect_engine(label: str, path: str):
                   if isinstance(onnx_ref, int) else str(num_layers))
 
     print(f"\n  ▶ 레이어 수: {reduction}  (ONNX 원본 기준)")
-    print(f"\n  ▶ 레이어 목록")
+    # ── IEngineInspector (TRT 10.x API) ───────────────────────
+    inspector = engine.create_engine_inspector()
+    context   = engine.create_execution_context()
+    inspector.execution_context = context
+
+    print(f"\n  ▶ 레이어 목록  (IEngineInspector, TRT 10.x)")
     print(f"  {'#':>4}  {'분류':30s}  이름")
     print(f"  {'-'*W}")
 
     type_counter = Counter()
     for i in range(num_layers):
-        layer_name = engine.get_layer(i)
-        ltype      = classify_layer(layer_name)
+        info = inspector.get_layer_information(i, trt.LayerInformationFormat.ONELINE)
+        # ONELINE 포맷: "Name: xxx Type: yyy ..."
+        name_m = re.search(r'Name:\s*([^,\n]+)',       info)
+        type_m = re.search(r'LayerType:\s*([^,\n]+)',  info)
+        layer_name = name_m.group(1).strip() if name_m else info[:60]
+        layer_type = type_m.group(1).strip() if type_m else ''
+
+        ltype   = classify_layer_by_type(layer_type, layer_name)
         type_counter[ltype] += 1
-        # 이름이 길면 앞 60자만 출력
-        display = layer_name if len(layer_name) <= 55 else layer_name[:52] + '...'
+        display = layer_name if len(layer_name) <= 52 else layer_name[:49] + '...'
         print(f"  {i:>4}  {ltype:30s}  {display}")
 
     # ── 타입별 집계 ────────────────────────────────────────────
     print(f"\n  ▶ 레이어 타입 집계")
-    print(f"  {'-'*40}")
+    print(f"  {'-'*50}")
     for ltype, cnt in type_counter.most_common():
-        bar = '█' * cnt
+        bar = '█' * min(cnt, 30)
         print(f"  {ltype:30s}  {cnt:3d}  {bar}")
 
     # ── Fusion 하이라이트 ──────────────────────────────────────
     print(f"\n  ▶ Fusion 분석")
     fused = sum(v for k, v in type_counter.items()
-                if 'fused' in k.lower() or 'myelin' in k.lower())
+                if any(w in k.lower() for w in ('fused', 'myelin', 'pointwise')))
     if fused:
-        print(f"  ✅ Fused 레이어: {fused}개")
-        print(f"     - Conv+BN+ReLU fusion: TRT가 Conv→BN→ReLU를 단일 CUDA 커널로 합침")
-        print(f"     - Myelin: NVIDIA 전용 딥러닝 컴파일러가 최적화한 커널")
+        print(f"  ✅ Fused/최적화 레이어: {fused}개")
+        print(f"     - CaskConvolution / PointWise : Conv+BN+ReLU 등을 단일 커널로 합침")
+        print(f"     - Myelin         : NVIDIA 전용 컴파일러로 추가 최적화된 커널")
     else:
-        print(f"  ℹ️  레이어 이름만으로 fusion 타입 자동 감지 불가")
-        print(f"     → trtexec --verbose 로 상세 로그 확인 권장")
+        print(f"  ℹ️  레이어 타입 이름으로 fusion 자동 감지 어려움")
+        print(f"     → 아래 raw JSON으로 직접 확인하세요")
+
+    # ── Raw JSON (레이어 0~4만 미리보기) ──────────────────────
+    print(f"\n  ▶ Raw Inspector JSON 미리보기 (첫 3개 레이어)")
+    print(f"  {'-'*W}")
+    for i in range(min(3, num_layers)):
+        info = inspector.get_layer_information(i, trt.LayerInformationFormat.JSON)
+        # 너무 길면 앞 300자만
+        preview = info.strip()[:300].replace('\n', ' ')
+        print(f"  [{i}] {preview}")
 
     print()
 
