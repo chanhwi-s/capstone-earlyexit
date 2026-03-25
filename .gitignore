@@ -45,4 +45,6 @@ dist/
 /onnx
 /onnx_plain
 
+/benchmark_results
+
 CLAUDE.md
