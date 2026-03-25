@@ -225,6 +225,53 @@ def print_result(threshold, r):
     )
 
 
+def plot_sweep(all_results, save_path):
+    import matplotlib
+    matplotlib.use('Agg')  # 디스플레이 없는 서버용
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as ticker
+
+    thresholds  = sorted(all_results.keys())
+    acc         = [all_results[t]['accuracy']       for t in thresholds]
+    ee1_rate    = [all_results[t]['exit_rate'][0]   for t in thresholds]
+    ee2_rate    = [all_results[t]['exit_rate'][1]   for t in thresholds]
+    main_rate   = [all_results[t]['exit_rate'][2]   for t in thresholds]
+    avg_lat     = [all_results[t]['avg_lat_ms']     for t in thresholds]
+    p50_lat     = [all_results[t]['p50_lat_ms']     for t in thresholds]
+    p99_lat     = [all_results[t]['p99_lat_ms']     for t in thresholds]
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    fig.suptitle('TRT Early Exit — Threshold Sweep (Jetson AGX Orin)', fontsize=13)
+
+    # 1) Exit Rate
+    ax = axes[0]
+    ax.plot(thresholds, ee1_rate,  marker='o', label='Exit1 (EE1)',  color='royalblue')
+    ax.plot(thresholds, ee2_rate,  marker='s', label='Exit2 (EE2)',  color='darkorange')
+    ax.plot(thresholds, main_rate, marker='^', label='Exit3 (Main)', color='green')
+    ax.set_title('Exit Distribution'); ax.set_xlabel('Threshold'); ax.set_ylabel('Exit Rate (%)')
+    ax.set_ylim([0, 105]); ax.legend(); ax.grid(alpha=0.3)
+
+    # 2) Overall Accuracy
+    ax = axes[1]
+    ax.plot(thresholds, acc, marker='D', color='black', linewidth=2)
+    ax.set_title('Overall Accuracy'); ax.set_xlabel('Threshold'); ax.set_ylabel('Accuracy')
+    ax.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=1.0))
+    ax.set_ylim([0.80, 1.0]); ax.grid(alpha=0.3)
+
+    # 3) Latency
+    ax = axes[2]
+    ax.plot(thresholds, avg_lat, marker='o', label='avg',  color='steelblue')
+    ax.plot(thresholds, p50_lat, marker='s', label='p50',  color='seagreen')
+    ax.plot(thresholds, p99_lat, marker='^', label='p99',  color='tomato')
+    ax.set_title('Latency'); ax.set_xlabel('Threshold'); ax.set_ylabel('ms')
+    ax.legend(); ax.grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"\n그래프 저장: {save_path}")
+
+
 # ── 메인 ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -251,12 +298,19 @@ def main():
     if args.eval_cifar10:
         if args.sweep:
             # threshold sweep
-            thresholds = np.arange(0.50, 1.00, 0.05)
+            thresholds  = np.arange(0.50, 1.00, 0.05)
+            all_results = {}
             print(f"{'thr':<8} {'acc':<8} {'EE1':>8} {'EE2':>8} {'Main':>8} {'avg_ms':>10} {'p50_ms':>10} {'p99_ms':>10}")
             print("=" * 80)
             for thr in thresholds:
-                r = eval_cifar10(engine, round(float(thr), 2), args.num_samples)
-                print_result(round(float(thr), 2), r)
+                t = round(float(thr), 2)
+                r = eval_cifar10(engine, t, args.num_samples)
+                print_result(t, r)
+                all_results[t] = r
+
+            # 그래프 저장
+            save_path = os.path.join(os.path.dirname(args.seg1), 'trt_sweep_results.png')
+            plot_sweep(all_results, save_path)
         else:
             # 단일 threshold
             print(f"=== CIFAR-10 평가 (threshold={args.threshold}, n={args.num_samples}) ===")
