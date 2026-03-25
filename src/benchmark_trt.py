@@ -1,7 +1,7 @@
 """
 TRT Latency Benchmark: Plain ResNet-18 vs Early Exit ResNet-18
 
-Plain과 EE 모델의 레이턴시를 직접 비교.
+Plain과 EE 모델의 레이턴시 / 전력 / 에너지를 직접 비교.
 결과를 테이블 + 그래프로 저장.
 
 사용법 (Orin에서):
@@ -12,12 +12,24 @@ Plain과 EE 모델의 레이턴시를 직접 비교.
     --seg3   ../onnx/seg3.engine \
     --threshold 0.80 \
     --num-samples 1000
+
+측정 지표:
+  - Accuracy, Avg/P50/P99 Latency, FPS
+  - Avg Power (mW), Energy per inference (mJ)   ← tegrastats
+  - GPU Utilization (%)                          ← tegrastats
 """
 
 import os
+import re
 import sys
+import csv
+import json
+import shutil
 import argparse
+import threading
+import subprocess
 import time
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -29,7 +41,92 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.dirname(__file__))
 
 
-# ── TRT Engine (torch 기반, infer_trt.py와 동일) ─────────────────────────────
+# ── tegrastats 모니터 ─────────────────────────────────────────────────────────
+
+def _parse_tegrastats_line(line: str) -> dict:
+    """tegrastats 한 줄을 파싱해 전력/GPU 사용률 반환."""
+    result = {}
+    # GPU utilization: GR3D_FREQ 92%@1300  또는  GR3D_FREQ 92%
+    m = re.search(r'GR3D_FREQ\s+(\d+)%', line)
+    if m:
+        result['gpu_util'] = int(m.group(1))
+    # Total power: TOT_PWR 16549mW
+    m = re.search(r'TOT_PWR\s+(\d+)mW', line)
+    if m:
+        result['tot_power_mw'] = int(m.group(1))
+    # GPU+SOC power: VDD_GPU_SOC 10340mW
+    m = re.search(r'VDD_GPU_SOC\s+(\d+)mW', line)
+    if m:
+        result['gpu_soc_power_mw'] = int(m.group(1))
+    # CPU+CV power: VDD_CPU_CV 1673mW
+    m = re.search(r'VDD_CPU_CV\s+(\d+)mW', line)
+    if m:
+        result['cpu_cv_power_mw'] = int(m.group(1))
+    return result if result else None
+
+
+class TegraStatsMonitor:
+    """백그라운드 스레드에서 tegrastats를 실행해 전력/GPU 사용률 수집."""
+
+    def __init__(self, interval_ms: int = 100):
+        self.interval_ms = interval_ms
+        self._proc   = None
+        self._thread = None
+        self._running = False
+        self.samples: list[dict] = []
+        self.available = shutil.which('tegrastats') is not None
+        if not self.available:
+            print("[WARNING] tegrastats를 찾을 수 없음. 전력/GPU 지표는 수집되지 않습니다.")
+
+    def start(self):
+        if not self.available:
+            return
+        self.samples = []
+        self._running = True
+        self._proc = subprocess.Popen(
+            ['tegrastats', '--interval', str(self.interval_ms)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        )
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if not self.available:
+            return
+        self._running = False
+        if self._proc:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+        if self._thread:
+            self._thread.join(timeout=2.0)
+
+    def _reader(self):
+        for line in self._proc.stdout:
+            if not self._running:
+                break
+            parsed = _parse_tegrastats_line(line)
+            if parsed:
+                self.samples.append(parsed)
+
+    def get_stats(self) -> dict:
+        """수집된 샘플로부터 평균 통계를 반환."""
+        if not self.samples:
+            return {'avg_power_mw': None, 'avg_gpu_util': None,
+                    'avg_gpu_soc_mw': None}
+        tot_powers   = [s['tot_power_mw']    for s in self.samples if 'tot_power_mw'    in s]
+        gpu_utils    = [s['gpu_util']         for s in self.samples if 'gpu_util'         in s]
+        gpu_soc      = [s['gpu_soc_power_mw'] for s in self.samples if 'gpu_soc_power_mw' in s]
+        return {
+            'avg_power_mw':  float(np.mean(tot_powers)) if tot_powers else None,
+            'avg_gpu_util':  float(np.mean(gpu_utils))  if gpu_utils  else None,
+            'avg_gpu_soc_mw':float(np.mean(gpu_soc))    if gpu_soc    else None,
+        }
+
+
+# ── TRT Engine ────────────────────────────────────────────────────────────────
 
 class TRTEngine:
     def __init__(self, engine_path):
@@ -72,17 +169,14 @@ class TRTEngine:
         return {name: t.cpu() for name, t in output_tensors.items()}
 
 
-# ── Plain 모델 추론 ───────────────────────────────────────────────────────────
+# ── 추론 함수 ─────────────────────────────────────────────────────────────────
 
 def infer_plain(engine: TRTEngine, image: torch.Tensor):
     t0  = time.perf_counter()
     out = engine.infer(image)
     lat = (time.perf_counter() - t0) * 1000
-    logits = out['logits']
-    return logits.argmax(dim=1).item(), lat
+    return out['logits'].argmax(dim=1).item(), lat
 
-
-# ── EE 모델 추론 ──────────────────────────────────────────────────────────────
 
 def infer_ee(seg1, seg2, seg3, image: torch.Tensor, threshold: float):
     t0 = time.perf_counter()
@@ -90,20 +184,17 @@ def infer_ee(seg1, seg2, seg3, image: torch.Tensor, threshold: float):
     out1        = seg1.infer(image)
     feat_layer2 = out1['feat_layer2']
     ee1_logits  = out1['ee1_logits']
-    conf1 = F.softmax(ee1_logits, dim=1).max(dim=1).values.item()
-    if conf1 >= threshold:
+    if F.softmax(ee1_logits, dim=1).max(dim=1).values.item() >= threshold:
         return ee1_logits.argmax(dim=1).item(), 1, (time.perf_counter() - t0) * 1000
 
     out2        = seg2.infer(feat_layer2)
     feat_layer3 = out2['feat_layer3']
     ee2_logits  = out2['ee2_logits']
-    conf2 = F.softmax(ee2_logits, dim=1).max(dim=1).values.item()
-    if conf2 >= threshold:
+    if F.softmax(ee2_logits, dim=1).max(dim=1).values.item() >= threshold:
         return ee2_logits.argmax(dim=1).item(), 2, (time.perf_counter() - t0) * 1000
 
     out3        = seg3.infer(feat_layer3)
-    main_logits = out3['main_logits']
-    return main_logits.argmax(dim=1).item(), 3, (time.perf_counter() - t0) * 1000
+    return out3['main_logits'].argmax(dim=1).item(), 3, (time.perf_counter() - t0) * 1000
 
 
 # ── 벤치마크 실행 ─────────────────────────────────────────────────────────────
@@ -121,51 +212,74 @@ def run_benchmark(plain_engine, seg1, seg2, seg3, threshold, num_samples):
         seed=cfg['train']['seed']
     )
 
-    plain_lats  = []
-    ee_lats     = []
-    exit_counts = [0, 0, 0]
-
-    plain_correct = 0
-    ee_correct    = 0
-
-    print(f"벤치마크 실행 중... (n={num_samples}, threshold={threshold})")
-
+    # 데이터 미리 로드 (tegrastats 측정 구간에서 IO 제외)
+    print("데이터 로드 중...")
+    samples = []
     for i, (images, labels) in enumerate(test_loader):
         if i >= num_samples:
             break
+        samples.append((images, labels[0].item()))
+    n = len(samples)
+    print(f"로드 완료: {n}개 샘플\n")
 
-        label = labels[0].item()
+    # ── Phase 1: Plain 벤치마크 ──────────────────────────────────
+    print("=== Plain ResNet-18 벤치마크 ===")
+    plain_monitor = TegraStatsMonitor()
+    plain_monitor.start()
 
-        # Plain 추론
-        plain_pred, plain_lat = infer_plain(plain_engine, images)
-        plain_lats.append(plain_lat)
-        if plain_pred == label:
+    plain_lats, plain_correct = [], 0
+    for images, label in samples:
+        pred, lat = infer_plain(plain_engine, images)
+        plain_lats.append(lat)
+        if pred == label:
             plain_correct += 1
 
-        # EE 추론
-        ee_pred, exit_idx, ee_lat = infer_ee(seg1, seg2, seg3, images, threshold)
-        ee_lats.append(ee_lat)
+    plain_monitor.stop()
+    plain_hw = plain_monitor.get_stats()
+    print(f"완료 (avg {np.mean(plain_lats):.3f}ms)\n")
+
+    # ── Phase 2: EE 벤치마크 ────────────────────────────────────
+    print("=== EE ResNet-18 벤치마크 ===")
+    ee_monitor = TegraStatsMonitor()
+    ee_monitor.start()
+
+    ee_lats, ee_correct = [], 0
+    exit_counts = [0, 0, 0]
+    for images, label in samples:
+        pred, exit_idx, lat = infer_ee(seg1, seg2, seg3, images, threshold)
+        ee_lats.append(lat)
         exit_counts[exit_idx - 1] += 1
-        if ee_pred == label:
+        if pred == label:
             ee_correct += 1
 
-    n = min(num_samples, i + 1)
+    ee_monitor.stop()
+    ee_hw = ee_monitor.get_stats()
+    print(f"완료 (avg {np.mean(ee_lats):.3f}ms)\n")
 
-    plain_stats = {
-        'accuracy': plain_correct / n,
-        'avg_ms':   float(np.mean(plain_lats)),
-        'p50_ms':   float(np.percentile(plain_lats, 50)),
-        'p99_ms':   float(np.percentile(plain_lats, 99)),
-        'latencies': plain_lats,
-    }
-    ee_stats = {
-        'accuracy':   ee_correct / n,
-        'avg_ms':     float(np.mean(ee_lats)),
-        'p50_ms':     float(np.percentile(ee_lats, 50)),
-        'p99_ms':     float(np.percentile(ee_lats, 99)),
-        'exit_rate':  [c / n * 100 for c in exit_counts],
-        'latencies':  ee_lats,
-    }
+    # ── 통계 계산 ────────────────────────────────────────────────
+    def make_stats(lats, correct, hw, exit_rate=None):
+        avg_ms = float(np.mean(lats))
+        stats = {
+            'accuracy':     correct / n,
+            'avg_ms':       avg_ms,
+            'p50_ms':       float(np.percentile(lats, 50)),
+            'p99_ms':       float(np.percentile(lats, 99)),
+            'fps':          1000.0 / avg_ms,
+            'latencies':    lats,
+            # 전력 (mW)
+            'avg_power_mw': hw['avg_power_mw'],
+            'avg_gpu_util': hw['avg_gpu_util'],
+            # 에너지/추론 (mJ) = power(mW) × latency(ms) / 1000
+            'energy_mj':    (hw['avg_power_mw'] * avg_ms / 1000.0)
+                            if hw['avg_power_mw'] is not None else None,
+        }
+        if exit_rate is not None:
+            stats['exit_rate'] = exit_rate
+        return stats
+
+    plain_stats = make_stats(plain_lats, plain_correct, plain_hw)
+    ee_stats    = make_stats(ee_lats,    ee_correct,    ee_hw,
+                             exit_rate=[c / n * 100 for c in exit_counts])
 
     return plain_stats, ee_stats, n
 
@@ -173,78 +287,134 @@ def run_benchmark(plain_engine, seg1, seg2, seg3, threshold, num_samples):
 # ── 결과 출력 ─────────────────────────────────────────────────────────────────
 
 def print_comparison(plain, ee, threshold, n):
-    speedup_avg = plain['avg_ms'] / ee['avg_ms']
-    speedup_p50 = plain['p50_ms'] / ee['p50_ms']
+    W = 65
+    sp_avg = plain['avg_ms'] / ee['avg_ms']
+    sp_p50 = plain['p50_ms'] / ee['p50_ms']
 
-    print(f"\n{'='*65}")
+    def _pw(v): return f"{v:.1f} mW" if v is not None else "N/A"
+    def _mj(v): return f"{v:.4f} mJ" if v is not None else "N/A"
+    def _gu(v): return f"{v:.1f}%"   if v is not None else "N/A"
+
+    print(f"\n{'='*W}")
     print(f"  Benchmark Results  (n={n}, threshold={threshold})")
-    print(f"{'='*65}")
-    print(f"{'':20s} {'Plain ResNet-18':>20s} {'EE ResNet-18':>20s}")
-    print(f"{'-'*65}")
-    print(f"{'Accuracy':20s} {plain['accuracy']:>20.4f} {ee['accuracy']:>20.4f}")
-    print(f"{'Avg Latency (ms)':20s} {plain['avg_ms']:>20.3f} {ee['avg_ms']:>20.3f}")
-    print(f"{'P50 Latency (ms)':20s} {plain['p50_ms']:>20.3f} {ee['p50_ms']:>20.3f}")
-    print(f"{'P99 Latency (ms)':20s} {plain['p99_ms']:>20.3f} {ee['p99_ms']:>20.3f}")
-    print(f"{'-'*65}")
-    print(f"{'Speedup (avg)':20s} {'—':>20s} {speedup_avg:>19.2f}x")
-    print(f"{'Speedup (p50)':20s} {'—':>20s} {speedup_p50:>19.2f}x")
-    print(f"{'-'*65}")
-    print(f"{'Exit1 rate':20s} {'—':>20s} {ee['exit_rate'][0]:>19.1f}%")
-    print(f"{'Exit2 rate':20s} {'—':>20s} {ee['exit_rate'][1]:>19.1f}%")
-    print(f"{'Main  rate':20s} {'—':>20s} {ee['exit_rate'][2]:>19.1f}%")
-    print(f"{'='*65}\n")
+    print(f"{'='*W}")
+    print(f"{'':22s} {'Plain ResNet-18':>20s} {'EE ResNet-18':>20s}")
+    print(f"{'-'*W}")
+    print(f"{'Accuracy':22s} {plain['accuracy']:>20.4f} {ee['accuracy']:>20.4f}")
+    print(f"{'Avg Latency (ms)':22s} {plain['avg_ms']:>20.3f} {ee['avg_ms']:>20.3f}")
+    print(f"{'P50 Latency (ms)':22s} {plain['p50_ms']:>20.3f} {ee['p50_ms']:>20.3f}")
+    print(f"{'P99 Latency (ms)':22s} {plain['p99_ms']:>20.3f} {ee['p99_ms']:>20.3f}")
+    print(f"{'FPS':22s} {plain['fps']:>20.1f} {ee['fps']:>20.1f}")
+    print(f"{'-'*W}")
+    print(f"{'Speedup (avg)':22s} {'—':>20s} {sp_avg:>19.2f}x")
+    print(f"{'Speedup (p50)':22s} {'—':>20s} {sp_p50:>19.2f}x")
+    print(f"{'-'*W}")
+    print(f"{'Avg Power':22s} {_pw(plain['avg_power_mw']):>20s} {_pw(ee['avg_power_mw']):>20s}")
+    print(f"{'Energy/Inference':22s} {_mj(plain['energy_mj']):>20s} {_mj(ee['energy_mj']):>20s}")
+    print(f"{'GPU Utilization':22s} {_gu(plain['avg_gpu_util']):>20s} {_gu(ee['avg_gpu_util']):>20s}")
+    print(f"{'-'*W}")
+    print(f"{'Exit1 rate':22s} {'—':>20s} {ee['exit_rate'][0]:>19.1f}%")
+    print(f"{'Exit2 rate':22s} {'—':>20s} {ee['exit_rate'][1]:>19.1f}%")
+    print(f"{'Main  rate':22s} {'—':>20s} {ee['exit_rate'][2]:>19.1f}%")
+    print(f"{'='*W}\n")
+
+
+# ── JSON 저장 ─────────────────────────────────────────────────────────────────
+
+def save_json(plain, ee, threshold, n, save_path):
+    def _clean(d):
+        out = {}
+        for k, v in d.items():
+            if k == 'latencies':
+                continue
+            out[k] = round(v, 6) if isinstance(v, float) else v
+        return out
+    data = {
+        'threshold': threshold, 'n': n,
+        'plain': _clean(plain), 'ee': _clean(ee),
+        'speedup_avg': round(plain['avg_ms'] / ee['avg_ms'], 4),
+        'speedup_p50': round(plain['p50_ms'] / ee['p50_ms'], 4),
+    }
+    if plain['energy_mj'] is not None and ee['energy_mj'] is not None:
+        data['energy_saving_pct'] = round(
+            (plain['energy_mj'] - ee['energy_mj']) / plain['energy_mj'] * 100, 2)
+    with open(save_path, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f"JSON 저장: {save_path}")
 
 
 # ── 그래프 저장 ───────────────────────────────────────────────────────────────
 
 def plot_comparison(plain, ee, threshold, save_path):
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    has_power = plain['avg_power_mw'] is not None
+
+    ncols = 4 if has_power else 3
+    fig, axes = plt.subplots(1, ncols, figsize=(5 * ncols, 5))
     fig.suptitle(
-        f'Plain ResNet-18 vs Early Exit ResNet-18  (threshold={threshold})\nJetson AGX Orin · TRT FP16',
+        f'Plain ResNet-18 vs Early Exit ResNet-18  (threshold={threshold})\n'
+        f'Jetson AGX Orin · TRT FP16  (n=1000)',
         fontsize=12
     )
 
-    # 1) Latency 분포 (히스토그램)
+    # 1) Latency 분포 히스토그램
     ax = axes[0]
-    bins = np.linspace(0, max(np.percentile(plain['latencies'], 99),
-                               np.percentile(ee['latencies'], 99)) * 1.1, 40)
+    p99_max = max(np.percentile(plain['latencies'], 99),
+                  np.percentile(ee['latencies'],    99))
+    bins = np.linspace(0, p99_max * 1.1, 40)
     ax.hist(plain['latencies'], bins=bins, alpha=0.6, label='Plain', color='steelblue')
     ax.hist(ee['latencies'],    bins=bins, alpha=0.6, label='EE',    color='tomato')
-    ax.axvline(plain['avg_ms'], color='steelblue', linestyle='--', linewidth=1.5)
-    ax.axvline(ee['avg_ms'],    color='tomato',    linestyle='--', linewidth=1.5)
+    ax.axvline(plain['avg_ms'], color='steelblue', linestyle='--', linewidth=1.5,
+               label=f"Plain avg {plain['avg_ms']:.2f}ms")
+    ax.axvline(ee['avg_ms'],    color='tomato',    linestyle='--', linewidth=1.5,
+               label=f"EE avg {ee['avg_ms']:.2f}ms")
     ax.set_title('Latency Distribution')
     ax.set_xlabel('Latency (ms)'); ax.set_ylabel('Count')
-    ax.legend(); ax.grid(alpha=0.3)
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-    # 2) 지표 막대 비교 (avg, p50, p99)
+    # 2) Latency 비교 막대 (avg / p50 / p99)
     ax = axes[1]
-    metrics = ['avg', 'p50', 'p99']
+    metrics    = ['avg', 'p50', 'p99']
     plain_vals = [plain['avg_ms'], plain['p50_ms'], plain['p99_ms']]
     ee_vals    = [ee['avg_ms'],    ee['p50_ms'],    ee['p99_ms']]
-    x = np.arange(len(metrics))
-    w = 0.35
+    x = np.arange(len(metrics)); w = 0.35
     bars1 = ax.bar(x - w/2, plain_vals, w, label='Plain', color='steelblue', alpha=0.8)
     bars2 = ax.bar(x + w/2, ee_vals,    w, label='EE',    color='tomato',    alpha=0.8)
     ax.set_title('Latency Comparison')
     ax.set_xticks(x); ax.set_xticklabels(metrics)
     ax.set_ylabel('ms'); ax.legend(); ax.grid(alpha=0.3, axis='y')
-    for bar in bars1:
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
-                f'{bar.get_height():.2f}', ha='center', va='bottom', fontsize=8)
-    for bar in bars2:
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+    for bar in list(bars1) + list(bars2):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.05,
                 f'{bar.get_height():.2f}', ha='center', va='bottom', fontsize=8)
 
-    # 3) EE exit rate 파이차트
+    # 3) EE Exit rate 파이차트
     ax = axes[2]
-    labels  = [f"Exit1\n(layer2)\n{ee['exit_rate'][0]:.1f}%",
-               f"Exit2\n(layer3)\n{ee['exit_rate'][1]:.1f}%",
-               f"Main\n(layer4)\n{ee['exit_rate'][2]:.1f}%"]
-    sizes   = ee['exit_rate']
-    colors  = ['#4C8EFF', '#FF8C42', '#4CAF50']
-    wedges, texts = ax.pie(sizes, labels=labels, colors=colors,
-                           startangle=90, wedgeprops=dict(width=0.5))
+    labels = [f"Exit1\n(layer2)\n{ee['exit_rate'][0]:.1f}%",
+              f"Exit2\n(layer3)\n{ee['exit_rate'][1]:.1f}%",
+              f"Main\n(layer4)\n{ee['exit_rate'][2]:.1f}%"]
+    ax.pie(ee['exit_rate'], labels=labels,
+           colors=['#4C8EFF', '#FF8C42', '#4CAF50'],
+           startangle=90, wedgeprops=dict(width=0.5))
     ax.set_title(f'EE Exit Distribution\n(threshold={threshold})')
+
+    # 4) 전력 / 에너지 비교 (tegrastats 있을 때만)
+    if has_power:
+        ax = axes[3]
+        cats   = ['Avg Power\n(mW)', 'Energy/Inf\n(mJ × 100)']
+        p_vals = [plain['avg_power_mw'], plain['energy_mj'] * 100]
+        e_vals = [ee['avg_power_mw'],    ee['energy_mj']    * 100]
+        x2 = np.arange(len(cats)); w2 = 0.35
+        b1 = ax.bar(x2 - w2/2, p_vals, w2, label='Plain', color='steelblue', alpha=0.8)
+        b2 = ax.bar(x2 + w2/2, e_vals, w2, label='EE',    color='tomato',    alpha=0.8)
+        ax.set_title('Power & Energy')
+        ax.set_xticks(x2); ax.set_xticklabels(cats)
+        ax.legend(); ax.grid(alpha=0.3, axis='y')
+        for bar in list(b1) + list(b2):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() * 1.01,
+                    f'{bar.get_height():.1f}', ha='center', va='bottom', fontsize=8)
+        # GPU util 텍스트
+        ax.text(0.5, 0.02,
+                f"GPU Util — Plain: {plain['avg_gpu_util']:.1f}%  EE: {ee['avg_gpu_util']:.1f}%",
+                transform=ax.transAxes, ha='center', fontsize=8, color='gray')
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -269,30 +439,24 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # ── 엔진 로드 ──
     print("\n=== TRT 엔진 로드 ===")
     plain_engine = TRTEngine(args.plain)
     seg1         = TRTEngine(args.seg1)
     seg2         = TRTEngine(args.seg2)
     seg3         = TRTEngine(args.seg3)
-    print()
+    print("엔진 로드 완료\n")
 
-    # ── 벤치마크 ──
     plain_stats, ee_stats, n = run_benchmark(
         plain_engine, seg1, seg2, seg3,
         threshold=args.threshold,
         num_samples=args.num_samples
     )
 
-    # ── 결과 출력 ──
     print_comparison(plain_stats, ee_stats, args.threshold, n)
 
-    # ── 그래프 저장 ──
-    save_path = os.path.join(
-        args.out_dir,
-        f'benchmark_thr{args.threshold:.2f}.png'
-    )
-    plot_comparison(plain_stats, ee_stats, args.threshold, save_path)
+    base = os.path.join(args.out_dir, f'benchmark_thr{args.threshold:.2f}')
+    plot_comparison(plain_stats, ee_stats, args.threshold, base + '.png')
+    save_json(plain_stats, ee_stats, args.threshold, n, base + '.json')
 
 
 if __name__ == '__main__':
