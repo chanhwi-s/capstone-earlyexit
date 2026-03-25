@@ -137,12 +137,31 @@ def inspect_engine(label: str, path: str):
         print(f"  ℹ️  레이어 타입 이름으로 fusion 자동 감지 어려움")
         print(f"     → 아래 raw JSON으로 직접 확인하세요")
 
-    # ── Raw JSON (레이어 0~4만 미리보기) ──────────────────────
+    # ── Raw JSON 전체 파일 저장 ────────────────────────────────
+    out_dir  = os.path.join(os.path.dirname(path), '..', 'engine_inspect')
+    os.makedirs(out_dir, exist_ok=True)
+    safe_label = label.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')
+    json_path  = os.path.abspath(os.path.join(out_dir, f"{safe_label}.json"))
+
+    import json as _json
+    layers_json = []
+    for i in range(num_layers):
+        raw = inspector.get_layer_information(i, trt.LayerInformationFormat.JSON)
+        try:
+            layers_json.append(_json.loads(raw))
+        except Exception:
+            layers_json.append({"raw": raw})
+
+    with open(json_path, 'w') as f:
+        _json.dump({"engine": label, "num_layers": num_layers,
+                    "layers": layers_json}, f, indent=2)
+    print(f"\n  ▶ Raw JSON 저장됨: {json_path}")
+
+    # ── Raw JSON 터미널 미리보기 (첫 3개 레이어) ──────────────
     print(f"\n  ▶ Raw Inspector JSON 미리보기 (첫 3개 레이어)")
     print(f"  {'-'*W}")
     for i in range(min(3, num_layers)):
         info = inspector.get_layer_information(i, trt.LayerInformationFormat.JSON)
-        # 너무 길면 앞 300자만
         preview = info.strip()[:300].replace('\n', ' ')
         print(f"  [{i}] {preview}")
 
