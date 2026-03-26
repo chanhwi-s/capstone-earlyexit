@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from models.ee_resnet18 import build_model
 from datasets.dataloader import get_dataloader
 from utils import load_config
+import paths
 
 
 def evaluate_with_threshold(model, test_loader, thresholds, device, num_classes):
@@ -217,23 +218,12 @@ def main():
 
     # ── 체크포인트 자동 선택 ──
     if args.ckpt is None:
-        base = "experiments"
-        if os.path.exists(base):
-            dirs = sorted([
-                os.path.join(base, d) for d in os.listdir(base)
-                if os.path.isdir(os.path.join(base, d))
-            ])
-            if not dirs:
-                print("[ERROR] experiments/ 디렉토리가 비어있음")
-                print("--ckpt로 직접 지정하세요: python eval_exit_rate.py --ckpt /path/to/best.pth")
-                sys.exit(1)
-            args.ckpt = os.path.join(dirs[-1], "checkpoints", "best.pth")
-            print(f"자동 선택 체크포인트: {args.ckpt}")
-        else:
-            print("[ERROR] experiments/ 폴더 없음")
-            print("--ckpt로 직접 지정하세요:")
-            print("  python eval_exit_rate.py --ckpt /path/to/best.pth")
+        args.ckpt = paths.latest_checkpoint("ee_resnet18")
+        if args.ckpt is None:
+            print("[ERROR] ee_resnet18 체크포인트 없음.")
+            print("--ckpt로 직접 지정하세요: python eval_exit_rate.py --ckpt /path/to/best.pth")
             sys.exit(1)
+        print(f"자동 선택 체크포인트: {args.ckpt}")
 
     if not os.path.exists(args.ckpt):
         print(f"[ERROR] 파일 없음: {args.ckpt}")
@@ -271,7 +261,7 @@ def main():
     print_results_table(results, total_samples)
 
     # ── 시각화 ──
-    out_dir = os.path.dirname(os.path.dirname(args.ckpt))
+    out_dir = paths.eval_dir("exit_rate")
     plot_results(results, out_dir)
 
     # ── JSON 저장 (나중 분석용) ──

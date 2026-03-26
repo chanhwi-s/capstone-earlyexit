@@ -30,6 +30,7 @@ import torch.nn.functional as F
 import tensorrt as trt
 
 sys.path.insert(0, os.path.dirname(__file__))
+import paths
 
 
 # ── TensorRT Engine (torch 기반) ─────────────────────────────────────────────
@@ -309,7 +310,7 @@ def main():
                 all_results[t] = r
 
             # 그래프 저장
-            save_path = os.path.join(os.path.dirname(args.seg1), 'trt_sweep_results.png')
+            save_path = os.path.join(paths.eval_dir("trt_sweep"), "trt_sweep_results.png")
             plot_sweep(all_results, save_path)
         else:
             # 단일 threshold

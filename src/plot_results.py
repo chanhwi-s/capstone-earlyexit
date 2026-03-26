@@ -16,6 +16,9 @@ import argparse
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
+sys.path.insert(0, os.path.dirname(__file__))
+import paths
+
 
 def load_csv(log_path):
     rows = []
@@ -119,15 +122,15 @@ if __name__ == "__main__":
     if args.exp_dir:
         exp_dir = args.exp_dir
     elif args.plain:
-        exp_dir = latest_exp("experiments_plain")
+        exp_dir = paths.latest_train_dir("plain_resnet18")
         if exp_dir is None:
-            print("[ERROR] experiments_plain/ 없음. 먼저 train_plain.py를 실행하세요.")
+            print("[ERROR] plain_resnet18 학습 디렉토리 없음. 먼저 train_plain.py를 실행하세요.")
             sys.exit(1)
         print(f"자동 선택 (plain): {exp_dir}")
     else:
-        exp_dir = latest_exp("experiments")
+        exp_dir = paths.latest_train_dir("ee_resnet18")
         if exp_dir is None:
-            print("[ERROR] experiments/ 없음.")
+            print("[ERROR] ee_resnet18 학습 디렉토리 없음.")
             sys.exit(1)
         print(f"자동 선택 (EE): {exp_dir}")
 

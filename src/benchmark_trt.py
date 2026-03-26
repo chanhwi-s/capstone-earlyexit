@@ -39,6 +39,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(__file__))
+import paths
 
 
 # ── tegrastats 모니터 ─────────────────────────────────────────────────────────
@@ -450,18 +451,32 @@ def plot_comparison(plain, ee, threshold, save_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--plain',       type=str, required=True,
-                        help='plain_resnet18.engine 경로')
-    parser.add_argument('--seg1',        type=str, required=True)
-    parser.add_argument('--seg2',        type=str, required=True)
-    parser.add_argument('--seg3',        type=str, required=True)
+    parser.add_argument('--plain',       type=str, default=None,
+                        help='plain_resnet18.engine 경로 (미지정 시 paths.py 자동 선택)')
+    parser.add_argument('--seg1',        type=str, default=None)
+    parser.add_argument('--seg2',        type=str, default=None)
+    parser.add_argument('--seg3',        type=str, default=None)
     parser.add_argument('--threshold',   type=float, default=0.80)
     parser.add_argument('--num-samples', type=int,   default=1000)
-    parser.add_argument('--out-dir',     type=str,   default='../benchmark_results',
-                        help='결과 저장 디렉토리')
+    parser.add_argument('--out-dir',     type=str,   default=None,
+                        help='결과 저장 디렉토리 (미지정 시 experiments/eval/benchmark/)')
     args = parser.parse_args()
 
-    os.makedirs(args.out_dir, exist_ok=True)
+    # ── 엔진 경로 자동 선택 ──
+    if args.plain is None:
+        args.plain = paths.engine_path("plain_resnet18", "plain_resnet18.engine")
+    if args.seg1 is None:
+        args.seg1  = paths.engine_path("ee_resnet18", "seg1.engine")
+    if args.seg2 is None:
+        args.seg2  = paths.engine_path("ee_resnet18", "seg2.engine")
+    if args.seg3 is None:
+        args.seg3  = paths.engine_path("ee_resnet18", "seg3.engine")
+
+    # ── 결과 디렉토리 ──
+    if args.out_dir is None:
+        args.out_dir = paths.eval_dir("benchmark")
+    else:
+        os.makedirs(args.out_dir, exist_ok=True)
 
     print("\n=== TRT 엔진 로드 ===")
     plain_engine = TRTEngine(args.plain)

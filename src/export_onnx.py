@@ -21,6 +21,7 @@ import torch.nn as nn
 sys.path.insert(0, os.path.dirname(__file__))
 from models.ee_resnet18 import build_model, BasicBlock, ExitHead
 from utils import load_config
+import paths
 
 
 # ── 세그먼트 래퍼 모듈 ────────────────────────────────────────────────────────
@@ -209,15 +210,10 @@ def main():
 
     # ── 체크포인트 자동 선택 ──
     if args.ckpt is None:
-        base = "experiments"
-        dirs = sorted([
-            os.path.join(base, d) for d in os.listdir(base)
-            if os.path.isdir(os.path.join(base, d))
-        ])
-        if not dirs:
-            print("[ERROR] experiments/ 없음. --ckpt 직접 지정하세요.")
+        args.ckpt = paths.latest_checkpoint("ee_resnet18")
+        if args.ckpt is None:
+            print("[ERROR] ee_resnet18 체크포인트 없음. --ckpt 직접 지정하세요.")
             sys.exit(1)
-        args.ckpt = os.path.join(dirs[-1], "checkpoints", "best.pth")
         print(f"자동 선택 체크포인트: {args.ckpt}")
 
     if not os.path.exists(args.ckpt):
@@ -241,8 +237,7 @@ def main():
     print(f"더미 입력 크기: (1, 3, {H}, {W})\n")
 
     # ── 출력 디렉토리 ──
-    out_dir = os.path.join(os.path.dirname(os.path.dirname(args.ckpt)), "onnx")
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir = paths.onnx_dir("ee_resnet18")
 
     # ── Export ──
     with torch.no_grad():

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from models.ee_resnet18 import build_model
 from datasets.dataloader import get_dataloader
 from utils import load_config
+import paths
 
 
 CIFAR10_CLASSES = [
@@ -233,17 +234,11 @@ def main():
 
     # ── 체크포인트 자동 선택 ──
     if args.ckpt is None:
-        base = 'experiments'
-        if os.path.exists(base):
-            dirs = sorted([
-                os.path.join(base, d) for d in os.listdir(base)
-                if os.path.isdir(os.path.join(base, d))
-            ])
-            args.ckpt = os.path.join(dirs[-1], 'checkpoints', 'best.pth')
-            print(f"자동 선택: {args.ckpt}")
-        else:
-            print("[ERROR] --ckpt 로 체크포인트 경로를 지정하세요")
+        args.ckpt = paths.latest_checkpoint("ee_resnet18")
+        if args.ckpt is None:
+            print("[ERROR] ee_resnet18 체크포인트 없음. --ckpt 로 경로를 지정하세요.")
             sys.exit(1)
+        print(f"자동 선택: {args.ckpt}")
 
     # ── 설정 / 모델 로드 ──
     cfg = load_config('configs/train.yaml')
@@ -274,7 +269,7 @@ def main():
     print_exit_summary(exit_samples, args.threshold)
 
     # ── 시각화 ──
-    out_dir = os.path.dirname(os.path.dirname(args.ckpt))
+    out_dir = paths.eval_dir("exit_samples")
     saved = plot_exit_samples(exit_samples, args.threshold, out_dir, cols=args.cols)
     print(f"\n총 {len(saved)}개 파일 저장:")
     for p in saved:

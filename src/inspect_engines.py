@@ -13,17 +13,20 @@ TRT 엔진 Layer Fusion 분석 스크립트
 """
 
 import os
+import sys
 import re
 from collections import Counter
 
 import tensorrt as trt
 
-HOME = os.environ['HOME']
+sys.path.insert(0, os.path.dirname(__file__))
+import paths
+
 ENGINES = {
-    "Plain ResNet-18"              : f"{HOME}/capstone-earlyexit/onnx_plain/plain_resnet18.engine",
-    "EE Seg1 (stem+layer1+2+EE1)" : f"{HOME}/capstone-earlyexit/onnx/seg1.engine",
-    "EE Seg2 (layer3+EE2)"        : f"{HOME}/capstone-earlyexit/onnx/seg2.engine",
-    "EE Seg3 (layer4+FC)"         : f"{HOME}/capstone-earlyexit/onnx/seg3.engine",
+    "Plain ResNet-18"              : paths.engine_path("plain_resnet18", "plain_resnet18.engine"),
+    "EE Seg1 (stem+layer1+2+EE1)" : paths.engine_path("ee_resnet18",   "seg1.engine"),
+    "EE Seg2 (layer3+EE2)"        : paths.engine_path("ee_resnet18",   "seg2.engine"),
+    "EE Seg3 (layer4+FC)"         : paths.engine_path("ee_resnet18",   "seg3.engine"),
 }
 
 # ResNet-18 ONNX 원본 레이어 수 (참고용)
@@ -138,8 +141,7 @@ def inspect_engine(label: str, path: str):
         print(f"     → 아래 raw JSON으로 직접 확인하세요")
 
     # ── Raw JSON 전체 파일 저장 ────────────────────────────────
-    out_dir  = os.path.join(os.path.dirname(path), '..', 'engine_inspect')
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir  = paths.eval_dir("engine_inspect")
     safe_label = label.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')
     json_path  = os.path.abspath(os.path.join(out_dir, f"{safe_label}.json"))
 

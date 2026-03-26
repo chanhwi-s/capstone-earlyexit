@@ -1,11 +1,9 @@
 import os
 import csv
 import random
-import shutil
 import yaml
 import numpy as np
 import torch
-from datetime import datetime
 
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -25,17 +23,6 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-
-# ── Experiment ──────────────────────────────────────────────────────────────
-
-def create_experiment_dir(config_path):
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    exp_dir = os.path.join("experiments", timestamp)
-    os.makedirs(exp_dir, exist_ok=True)
-    os.makedirs(os.path.join(exp_dir, "checkpoints"), exist_ok=True)
-    shutil.copy(config_path, os.path.join(exp_dir, "config.yaml"))
-    return exp_dir
 
 
 # ── CSV Logger ───────────────────────────────────────────────────────────────

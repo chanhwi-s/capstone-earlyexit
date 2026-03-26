@@ -14,6 +14,7 @@ import torch
 sys.path.insert(0, os.path.dirname(__file__))
 from models.plain_resnet18 import build_model
 from utils import load_config
+import paths
 
 
 def main():
@@ -27,18 +28,10 @@ def main():
 
     # ── 체크포인트 자동 선택 ──
     if args.ckpt is None:
-        base = "experiments_plain"
-        if not os.path.exists(base):
-            print("[ERROR] experiments_plain/ 없음. 먼저 train_plain.py를 실행하세요.")
+        args.ckpt = paths.latest_checkpoint("plain_resnet18")
+        if args.ckpt is None:
+            print("[ERROR] plain_resnet18 체크포인트 없음. 먼저 train_plain.py를 실행하세요.")
             sys.exit(1)
-        dirs = sorted([
-            os.path.join(base, d) for d in os.listdir(base)
-            if os.path.isdir(os.path.join(base, d))
-        ])
-        if not dirs:
-            print("[ERROR] experiments_plain/ 비어있음")
-            sys.exit(1)
-        args.ckpt = os.path.join(dirs[-1], "checkpoints", "best.pth")
         print(f"자동 선택: {args.ckpt}")
 
     if not os.path.exists(args.ckpt):
@@ -60,8 +53,7 @@ def main():
     print(f"더미 입력: (1, 3, {H}, {W})\n")
 
     # ── 출력 디렉토리 ──
-    out_dir = os.path.join(os.path.dirname(os.path.dirname(args.ckpt)), "onnx")
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir = paths.onnx_dir("plain_resnet18")
 
     # ── Export ──
     save_path = os.path.join(out_dir, "plain_resnet18.onnx")
