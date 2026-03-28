@@ -73,7 +73,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
         fi
         echo "  빌드: ${EE_ONNX_MAP[$seg]} → ${seg}.engine"
         trtexec --onnx="$onnx_path" --saveEngine="$engine_path" \
-                --fp16 --workspace=1024 --iterations=100 --warmUp=500 --avgRuns=100 \
+                --fp16 --iterations=100 --warmUp=500 --avgRuns=100 \
                 2>&1 | tail -3
     done
     echo "[1/9] EE 엔진 빌드 완료"
@@ -85,7 +85,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     if [[ -f "$PLAIN_ONNX" ]]; then
         trtexec --onnx="$PLAIN_ONNX" \
                 --saveEngine="$PLAIN_ENGINE_DIR/plain_resnet18.engine" \
-                --fp16 --workspace=1024 --iterations=100 --warmUp=500 --avgRuns=100 \
+                --fp16 --iterations=100 --warmUp=500 --avgRuns=100 \
                 2>&1 | tail -3
         echo "[2/9] Plain 엔진 빌드 완료"
     else
@@ -108,7 +108,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
         fi
         echo "  빌드: ${VEE_ONNX_MAP[$seg]} → ${seg}.engine"
         trtexec --onnx="$onnx_path" --saveEngine="$engine_path" \
-                --fp16 --workspace=1024 --iterations=100 --warmUp=500 --avgRuns=100 \
+                --fp16 --iterations=100 --warmUp=500 --avgRuns=100 \
                 2>&1 | tail -3
     done
     echo "[3/9] VEE 엔진 빌드 완료"
