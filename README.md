@@ -38,23 +38,30 @@ capstonedesign/
 │   ├── profiling_utils.py             # ★ P50/P90/P95/P99 + Goodput 계산
 │   ├── utils.py
 │   │
-│   ├── train.py                       # EE 학습
-│   ├── train_plain.py                 # Plain 학습
-│   ├── train_vee.py                   # VEE 학습
+│   ├── train/                         # 학습 스크립트
+│   │   ├── train.py                   # EE 학습
+│   │   ├── train_plain.py             # Plain 학습
+│   │   └── train_vee.py               # VEE 학습
 │   │
-│   ├── export_onnx.py                 # EE → ONNX (full + 3-seg)
-│   ├── export_onnx_plain.py           # Plain → ONNX
-│   ├── export_onnx_vee.py             # VEE → ONNX (full + 2-seg)
+│   ├── export/                        # ONNX 변환
+│   │   ├── export_onnx.py             # EE → ONNX (full + 3-seg)
+│   │   ├── export_onnx_plain.py       # Plain → ONNX
+│   │   └── export_onnx_vee.py         # VEE → ONNX (full + 2-seg)
 │   │
-│   ├── eval_exit_rate.py              # threshold별 exit rate 평가
-│   ├── infer_trt.py                   # EE 3-seg TRT 추론 + sweep
-│   ├── infer_trt_hybrid.py            # ★ Hybrid 런타임 (VEE + batched plain fallback)
-│   ├── benchmark_trt.py               # Plain vs EE 벤치마크
-│   ├── benchmark_trt_hybrid.py        # ★ 4-Way 비교 벤치마크 (Plain/EE/VEE/Hybrid)
-│   ├── analyze_hard_samples.py        # ★ Hard sample 분석 (EE→Plain 정확도 비교)
-│   ├── inspect_engines.py             # TRT 레이어 fusion 분석
-│   ├── plot_results.py                # 학습 곡선 시각화
-│   └── visualize_exit_samples.py      # exit별 샘플 시각화
+│   ├── infer/                         # TRT 추론
+│   │   ├── infer_trt.py               # EE 3-seg TRT 추론 + sweep
+│   │   └── infer_trt_hybrid.py        # ★ Hybrid 런타임 (VEE + batched plain fallback)
+│   │
+│   ├── benchmark/                     # 벤치마크
+│   │   ├── benchmark_trt.py           # Plain vs EE 벤치마크
+│   │   └── benchmark_trt_hybrid.py    # ★ 4-Way 비교 벤치마크 (Plain/EE/VEE/Hybrid)
+│   │
+│   └── analysis/                      # 분석 & 시각화
+│       ├── eval_exit_rate.py          # threshold별 exit rate 평가
+│       ├── analyze_hard_samples.py    # ★ Hard sample 분석 (EE→Plain 정확도 비교)
+│       ├── inspect_engines.py         # TRT 레이어 fusion 분석
+│       ├── plot_results.py            # 학습 곡선 시각화
+│       └── visualize_exit_samples.py  # exit별 샘플 시각화
 │
 ├── scripts/
 │   ├── train_pipeline.sh              # ★ 서버: EE+Plain+VEE 학습 + ONNX 변환
@@ -111,23 +118,23 @@ SKIP_VEE=1  bash scripts/train_pipeline.sh   # EE + Plain만 학습
 cd src
 
 # 학습
-python train.py           # EE ResNet-18
-python train_plain.py     # Plain ResNet-18
-python train_vee.py       # VEE ResNet-18
+python train/train.py           # EE ResNet-18
+python train/train_plain.py     # Plain ResNet-18
+python train/train_vee.py       # VEE ResNet-18
 
 # 학습 곡선 시각화
-python plot_results.py            # EE (자동 선택)
-python plot_results.py --plain    # Plain
-python plot_results.py experiments/train/vee_resnet18/run_.../  # VEE (직접 지정)
+python analysis/plot_results.py            # EE (자동 선택)
+python analysis/plot_results.py --plain    # Plain
+python analysis/plot_results.py experiments/train/vee_resnet18/run_.../  # VEE (직접 지정)
 
 # ONNX 변환
-python export_onnx.py --mode both      # EE (full + 3-seg)
-python export_onnx_plain.py            # Plain
-python export_onnx_vee.py --mode both  # VEE (full + 2-seg)
+python export/export_onnx.py --mode both      # EE (full + 3-seg)
+python export/export_onnx_plain.py            # Plain
+python export/export_onnx_vee.py --mode both  # VEE (full + 2-seg)
 
 # Exit rate 분석 (PyTorch, 서버에서)
-python eval_exit_rate.py --threshold 0.80
-python analyze_hard_samples.py --threshold 0.80
+python analysis/eval_exit_rate.py --threshold 0.80
+python analysis/analyze_hard_samples.py --threshold 0.80
 ```
 
 ---
@@ -186,25 +193,25 @@ trtexec --onnx=experiments/onnx/vee_resnet18/vee_seg2_layer2to4.onnx \
 cd src
 
 # Plain vs EE (기존)
-python benchmark_trt.py --threshold 0.80
+python benchmark/benchmark_trt.py --threshold 0.80
 
 # 4-Way 비교: Plain / EE-3seg / VEE-2seg / Hybrid
-python benchmark_trt_hybrid.py --threshold 0.80 --hybrid-bs 8 --hybrid-to-ms 10
+python benchmark/benchmark_trt_hybrid.py --threshold 0.80 --hybrid-bs 8 --hybrid-to-ms 10
 
 # Hybrid grid search (batch_size × timeout 최적값 탐색)
-python infer_trt_hybrid.py --grid-search \
+python infer/infer_trt_hybrid.py --grid-search \
     --batch-sizes 1 2 4 8 16 32 \
     --timeouts    2 5 10 20 50
 
 # EE threshold sweep
-python infer_trt.py \
+python infer/infer_trt.py \
     --seg1 ../experiments/trt_engines/ee_resnet18/seg1.engine \
     --seg2 ../experiments/trt_engines/ee_resnet18/seg2.engine \
     --seg3 ../experiments/trt_engines/ee_resnet18/seg3.engine \
     --eval-cifar10 --sweep
 
 # Hard sample 분석
-python analyze_hard_samples.py --threshold 0.80
+python analysis/analyze_hard_samples.py --threshold 0.80
 ```
 
 ---

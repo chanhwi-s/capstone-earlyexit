@@ -122,7 +122,7 @@ cd "$SRC_DIR"
 # ── 4. 기존 Plain vs EE 벤치마크 (benchmark_trt.py) ─────────
 echo ""
 echo "[4/9] Plain vs EE 3-Segment 벤치마크 (p50/p90/p95/p99 포함)..."
-python benchmark_trt.py \
+python benchmark/benchmark_trt.py \
     --threshold "$THRESHOLD" \
     --num-samples "$N_SAMPLES"
 echo "[4/9] 벤치마크 완료"
@@ -130,7 +130,7 @@ echo "[4/9] 벤치마크 완료"
 # ── 5. 4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) ──────
 echo ""
 echo "[5/9] 4-Way 비교 벤치마크 (profiling_utils 지표 포함)..."
-python benchmark_trt_hybrid.py \
+python benchmark/benchmark_trt_hybrid.py \
     --threshold      "$THRESHOLD" \
     --num-samples    "$N_SAMPLES" \
     --hybrid-bs      8 \
@@ -140,7 +140,7 @@ echo "[5/9] 4-Way 벤치마크 완료"
 # ── 6. Hybrid runtime grid search ────────────────────────────
 echo ""
 echo "[6/9] Hybrid grid search (batch_size × timeout)..."
-python infer_trt_hybrid.py \
+python infer/infer_trt_hybrid.py \
     --threshold    "$THRESHOLD" \
     --num-samples  "$N_SAMPLES" \
     --grid-search \
@@ -151,7 +151,7 @@ echo "[6/9] Grid search 완료"
 # ── 7. TRT threshold sweep ────────────────────────────────────
 echo ""
 echo "[7/9] EE TRT threshold sweep (0.50~0.95)..."
-python infer_trt.py \
+python infer/infer_trt.py \
     --seg1  "$EE_ENGINE_DIR/seg1.engine"  \
     --seg2  "$EE_ENGINE_DIR/seg2.engine"  \
     --seg3  "$EE_ENGINE_DIR/seg3.engine"  \
@@ -162,7 +162,7 @@ echo "[7/9] Sweep 완료"
 if [[ "${SKIP_HARD:-0}" != "1" ]]; then
     echo ""
     echo "[8/9] Hard sample 분석 (EE exit3 → Plain 비교)..."
-    python analyze_hard_samples.py --threshold "$THRESHOLD"
+    python analysis/analyze_hard_samples.py --threshold "$THRESHOLD"
     echo "[8/9] Hard sample 분석 완료"
 else
     echo "[8/9] Hard sample 분석 스킵 (SKIP_HARD=1)"
@@ -171,7 +171,7 @@ fi
 # ── 9. 엔진 레이어 fusion 분석 ───────────────────────────────
 echo ""
 echo "[9/9] TRT 레이어 fusion 분석..."
-python inspect_engines.py
+python analysis/inspect_engines.py
 echo "[9/9] 분석 완료"
 
 echo ""

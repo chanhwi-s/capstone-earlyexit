@@ -30,7 +30,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.ee_resnet18 import build_model as build_ee
 from models.plain_resnet18 import build_model as build_plain
 from datasets.dataloader import get_dataloader

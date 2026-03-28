@@ -38,7 +38,7 @@ cd "$SRC_DIR"
 if [[ "${SKIP_EE:-0}" != "1" ]]; then
     echo ""
     echo "[1/6] EE ResNet-18 학습 시작..."
-    python train.py
+    python train/train.py
     echo "[1/6] EE 학습 완료"
 else
     echo "[1/6] EE 학습 스킵 (SKIP_EE=1)"
@@ -48,7 +48,7 @@ fi
 if [[ "${SKIP_PLAIN:-0}" != "1" ]]; then
     echo ""
     echo "[2/6] Plain ResNet-18 학습 시작..."
-    python train_plain.py
+    python train/train_plain.py
     echo "[2/6] Plain 학습 완료"
 else
     echo "[2/6] Plain 학습 스킵 (SKIP_PLAIN=1)"
@@ -58,7 +58,7 @@ fi
 if [[ "${SKIP_VEE:-0}" != "1" ]]; then
     echo ""
     echo "[3/6] VEE ResNet-18 학습 시작 (exit @ layer1)..."
-    python train_vee.py
+    python train/train_vee.py
     echo "[3/6] VEE 학습 완료"
 else
     echo "[3/6] VEE 학습 스킵 (SKIP_VEE=1)"
@@ -67,19 +67,19 @@ fi
 # ── 4. EE 모델 ONNX 변환 ─────────────────────────────────────
 echo ""
 echo "[4/6] EE 모델 ONNX 변환 (both: full + seg)..."
-python export_onnx.py --mode both
+python export/export_onnx.py --mode both
 echo "[4/6] EE ONNX 변환 완료"
 
 # ── 5. Plain 모델 ONNX 변환 ──────────────────────────────────
 echo ""
 echo "[5/6] Plain 모델 ONNX 변환..."
-python export_onnx_plain.py
+python export/export_onnx_plain.py
 echo "[5/6] Plain ONNX 변환 완료"
 
 # ── 6. VEE 모델 ONNX 변환 ────────────────────────────────────
 echo ""
 echo "[6/6] VEE 모델 ONNX 변환 (both: full + seg)..."
-python export_onnx_vee.py --mode both
+python export/export_onnx_vee.py --mode both
 echo "[6/6] VEE ONNX 변환 완료"
 
 echo ""

@@ -41,7 +41,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths
 from profiling_utils import (
     compute_latency_stats, print_latency_report, format_stats_row,
@@ -202,7 +202,7 @@ def bench_vee_2seg(seg1, seg2, images, labels, threshold):
 def bench_hybrid(vee_seg1, plain_engine, images, labels, threshold,
                  batch_size=8, timeout_ms=10.0):
     """Hybrid: VEE seg1 exit → batched plain fallback."""
-    from infer_trt_hybrid import HybridOrchestrator, eval_cifar10_hybrid
+    from infer.infer_trt_hybrid import HybridOrchestrator, eval_cifar10_hybrid
 
     orch = HybridOrchestrator(vee_seg1, plain_engine,
                               batch_size=batch_size, timeout_ms=timeout_ms)

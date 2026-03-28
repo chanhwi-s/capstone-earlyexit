@@ -1,23 +1,29 @@
 """
-Very Early Exit ResNet-18 학습 스크립트
+Early-Exit ResNet-18 학습 스크립트
 
 사용법:
   cd src
-  python train_vee.py
+  python train.py
 
 결과 저장 위치:
-  experiments/train/vee_resnet18/run_YYYYMMDD_HHMMSS/
+  experiments/train/ee_resnet18/run_YYYYMMDD_HHMMSS/
+    checkpoints/  best.pth  final.pth  epoch_N.pth
+    config.yaml
+    train_log.csv
 """
 
 import os
+import sys
 import shutil
 import torch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch.nn as nn
 import torch.optim as optim
 
-from models.vee_resnet18 import build_model
+from models.ee_resnet18 import build_model
 from datasets.dataloader import get_dataloader
-from engine.vee_trainer import train_one_epoch, evaluate
+from engine.ee_trainer import train_one_epoch, evaluate
 from utils import load_config, set_seed, log_to_csv
 import paths
 
@@ -33,11 +39,7 @@ num_workers = cfg["dataset"]["num_workers"]
 batch_size = cfg["train"]["batch_size"]
 epochs     = cfg["train"]["epochs"]
 seed       = cfg["train"]["seed"]
-
-# VEE: exit head 1개 + main → w1, w3 사용 (w2는 VEE에서 불필요)
-w_exit = cfg["train"].get("w1", 0.3)
-w_main = cfg["train"].get("w3", 1.0)
-weights = (w_exit, w_main)
+weights    = (cfg["train"]["w1"], cfg["train"]["w2"], cfg["train"]["w3"])
 
 lr           = float(cfg["optimizer"]["lr"])
 momentum     = float(cfg["optimizer"]["momentum"])
@@ -58,13 +60,12 @@ def train():
         device = torch.device("cpu")
     print(f"Device: {device}")
 
-    # ── 실험 디렉토리 ──
-    exp_dir  = paths.new_train_dir("vee_resnet18")
+    # ── 실험 디렉토리 (paths.py 중앙화) ──
+    exp_dir  = paths.new_train_dir("ee_resnet18")
     log_path = os.path.join(exp_dir, "train_log.csv")
     shutil.copy(config_path, os.path.join(exp_dir, "config.yaml"))
     print(f"Experiment dir : {exp_dir}")
-    print(f"Log file       : {log_path}")
-    print(f"Weights        : w_exit={w_exit}, w_main={w_main}\n")
+    print(f"Log file       : {log_path}\n")
 
     train_loader, test_loader, num_classes = get_dataloader(
         dataset=dataset,
@@ -84,10 +85,10 @@ def train():
     best_test_acc = 0.0
 
     for epoch in range(epochs):
-        train_loss, train_acc_ee1, train_acc_main = train_one_epoch(
+        train_loss, train_acc1, train_acc2, train_acc3 = train_one_epoch(
             model, train_loader, optimizer, criterion, device, weights=weights
         )
-        test_loss, test_acc_ee1, test_acc_main = evaluate(
+        test_loss, test_acc1, test_acc2, test_acc_main = evaluate(
             model, test_loader, criterion, device
         )
 
@@ -96,17 +97,19 @@ def train():
 
         print(
             f"[{epoch+1:3d}/{epochs}] lr={current_lr:.5f} | "
-            f"train loss={train_loss:.4f}  ee1={train_acc_ee1:.4f} main={train_acc_main:.4f} | "
-            f"test  loss={test_loss:.4f}  ee1={test_acc_ee1:.4f}  main={test_acc_main:.4f}"
+            f"train loss={train_loss:.4f}  ee1={train_acc1:.4f} ee2={train_acc2:.4f} main={train_acc3:.4f} | "
+            f"test  loss={test_loss:.4f}  ee1={test_acc1:.4f}  ee2={test_acc2:.4f}  main={test_acc_main:.4f}"
         )
 
         log_to_csv(log_path, epoch + 1, {
             "lr":             current_lr,
             "train_loss":     train_loss,
-            "train_acc_ee1":  train_acc_ee1,
-            "train_acc_main": train_acc_main,
+            "train_acc_ee1":  train_acc1,
+            "train_acc_ee2":  train_acc2,
+            "train_acc_main": train_acc3,
             "test_loss":      test_loss,
-            "test_acc_ee1":   test_acc_ee1,
+            "test_acc_ee1":   test_acc1,
+            "test_acc_ee2":   test_acc2,
             "test_acc_main":  test_acc_main,
         })
 

@@ -21,7 +21,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.ee_resnet18 import build_model
 from datasets.dataloader import get_dataloader
 from utils import load_config

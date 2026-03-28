@@ -21,7 +21,7 @@ import argparse
 import torch
 import torch.nn as nn
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.vee_resnet18 import build_model
 from utils import load_config
 import paths

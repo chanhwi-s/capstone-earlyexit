@@ -11,7 +11,7 @@ import sys
 import argparse
 import torch
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.plain_resnet18 import build_model
 from utils import load_config
 import paths

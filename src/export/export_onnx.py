@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 
 # ── 경로 설정 ─────────────────────────────────────────────────────────────────
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.ee_resnet18 import build_model, BasicBlock, ExitHead
 from utils import load_config
 import paths
