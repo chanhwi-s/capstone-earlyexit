@@ -83,9 +83,14 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     echo "[2/9] Plain 엔진 빌드 (FP16)..."
     PLAIN_ONNX="$PLAIN_ONNX_DIR/plain_resnet18.onnx"
     if [[ -f "$PLAIN_ONNX" ]]; then
+        # Plain 엔진은 Hybrid fallback에서 배치 추론에 사용되므로 동적 배치로 빌드
         trtexec --onnx="$PLAIN_ONNX" \
                 --saveEngine="$PLAIN_ENGINE_DIR/plain_resnet18.engine" \
-                --fp16 --iterations=100 --warmUp=500 --avgRuns=100 \
+                --fp16 \
+                --minShapes=input:1x3x32x32 \
+                --optShapes=input:8x3x32x32 \
+                --maxShapes=input:32x3x32x32 \
+                --iterations=100 --warmUp=500 --avgRuns=100 \
                 2>&1 | tail -3
         echo "[2/9] Plain 엔진 빌드 완료"
     else
