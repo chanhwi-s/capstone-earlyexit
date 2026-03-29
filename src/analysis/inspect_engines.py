@@ -27,6 +27,8 @@ ENGINES = {
     "EE Seg1 (stem+layer1+2+EE1)" : paths.engine_path("ee_resnet18",   "seg1.engine"),
     "EE Seg2 (layer3+EE2)"        : paths.engine_path("ee_resnet18",   "seg2.engine"),
     "EE Seg3 (layer4+FC)"         : paths.engine_path("ee_resnet18",   "seg3.engine"),
+    "VEE Seg1 (stem+layer1+EE1)"  : paths.engine_path("vee_resnet18",  "vee_seg1.engine"),
+    "VEE Seg2 (layer2+3+4+FC)"    : paths.engine_path("vee_resnet18",  "vee_seg2.engine"),
 }
 
 # ResNet-18 ONNX 원본 레이어 수 (참고용)
@@ -35,6 +37,8 @@ ONNX_LAYER_COUNTS = {
     "EE Seg1 (stem+layer1+2+EE1)" : 32,
     "EE Seg2 (layer3+EE2)"        : 18,
     "EE Seg3 (layer4+FC)"         : 16,
+    "VEE Seg1 (stem+layer1+EE1)"  : 20,   # stem(5) + layer1(2×BasicBlock=12) + exit1(3)
+    "VEE Seg2 (layer2+3+4+FC)"    : 42,   # layer2+3+4(3×2×BasicBlock≈36) + main_fc(3) + pool(3)
 }
 
 

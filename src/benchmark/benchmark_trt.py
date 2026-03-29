@@ -1,8 +1,10 @@
 """
-TRT Latency Benchmark: Plain ResNet-18 vs Early Exit ResNet-18
+[DEPRECATED] TRT Latency Benchmark: Plain ResNet-18 vs Early Exit ResNet-18
 
-Plain과 EE 모델의 레이턴시 / 전력 / 에너지를 직접 비교.
-결과를 테이블 + 그래프로 저장.
+⚠️  이 스크립트는 Plain vs EE 2-way 비교만 수행합니다.
+    3-way(Plain / EE / VEE) 이상 비교는 benchmark_trt_hybrid.py 를 사용하세요.
+    benchmark_thr{threshold}.* 결과 파일은 더 이상 생성하지 않습니다.
+    대신 compare_thr{threshold}.* 파일(benchmark_trt_hybrid.py)을 사용하세요.
 
 사용법 (Orin에서):
   python benchmark_trt.py \
@@ -493,10 +495,19 @@ def main():
 
     print_comparison(plain_stats, ee_stats, args.threshold, n)
 
-    base = os.path.join(args.out_dir, f'benchmark_thr{args.threshold:.2f}')
-    plot_comparison(plain_stats, ee_stats, args.threshold, base + '.png')
-    save_json(plain_stats, ee_stats, args.threshold, n, base + '.json')
+    # ── 저장 비활성화 (benchmark_trt_hybrid.py의 compare_thr*.* 파일로 통합) ──
+    print("\n[INFO] benchmark_thr{thr}.* 파일 저장이 비활성화되었습니다.")
+    print("       3-way 비교 결과는 benchmark_trt_hybrid.py → compare_thr*.* 를 사용하세요.")
+    # base = os.path.join(args.out_dir, f'benchmark_thr{args.threshold:.2f}')
+    # plot_comparison(plain_stats, ee_stats, args.threshold, base + '.png')
+    # save_json(plain_stats, ee_stats, args.threshold, n, base + '.json')
 
 
 if __name__ == '__main__':
+    import warnings
+    warnings.warn(
+        "\n⚠️  benchmark_trt.py 는 deprecated 되었습니다.\n"
+        "   Plain / EE / VEE / Hybrid 4-way 비교는 benchmark_trt_hybrid.py 를 사용하세요.\n",
+        DeprecationWarning, stacklevel=2,
+    )
     main()
