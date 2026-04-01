@@ -4,16 +4,19 @@
 #
 #  전제 조건:
 #    - JetPack 6.x (TensorRT 10.x 포함)
-#    - experiments/onnx/ 에 ONNX 파일 존재 (train_pipeline.sh 실행 후)
+#    - 5090에서 실험 디렉토리 전송 완료:
+#        scp -r experiments/exp_YYYYMMDD_HHMMSS \
+#            cap6@202.30.10.85:capstone-earlyexit/experiments/
 #
 #  실행 순서:
+#    0. 최신 exp_* 디렉토리 자동 감지 (또는 EXP_DIR 직접 지정)
 #    1. EE  ONNX → TRT 엔진 빌드 (seg1/2/3, FP16)
 #    2. Plain ONNX → TRT 엔진 빌드 (FP16, 동적 배치 1~32)
 #    3. VEE ONNX → TRT 엔진 빌드 (vee_seg1/vee_seg2, FP16)
 #    4. 기존 벤치마크 (Plain vs EE 3-seg)
 #    5. 4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) + profiling_utils 지표
 #    6. Hybrid runtime grid search (batch_size × timeout)
-#    7. TRT threshold sweep
+#    7. TRT threshold sweep (EE + VEE)
 #    8. 엔진 레이어 fusion 분석
 #
 #  NOTE: analyze_hard_samples.py 는 PyTorch 체크포인트가 필요하므로
@@ -21,14 +24,16 @@
 #          cd src && python analysis/analyze_hard_samples.py --threshold 0.80
 #
 #  환경 변수:
+#    EXP_DIR=<path>    특정 실험 디렉토리 지정 (기본: 최신 exp_* 자동 감지)
 #    SKIP_BUILD=1      TRT 빌드 스킵 (엔진이 이미 존재할 때)
 #    THRESHOLD=0.80    confidence threshold (기본값)
 #    N_SAMPLES=1000    샘플 수
 #
 #  사용법:
 #    cd <project_root>
-#    bash scripts/orin_pipeline.sh
-#    SKIP_BUILD=1 bash scripts/orin_pipeline.sh
+#    bash scripts/orin_pipeline.sh                          # 최신 실험 자동 감지
+#    SKIP_BUILD=1 bash scripts/orin_pipeline.sh             # 빌드 스킵
+#    EXP_DIR=experiments/exp_20260401_120000 bash scripts/orin_pipeline.sh  # 직접 지정
 #    SKIP_BUILD=1 THRESHOLD=0.85 N_SAMPLES=2000 bash scripts/orin_pipeline.sh
 # ============================================================
 
@@ -38,22 +43,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 SRC_DIR="$PROJECT_ROOT/src"
 
-EE_ONNX_DIR="$PROJECT_ROOT/experiments/onnx/ee_resnet18"
-PLAIN_ONNX_DIR="$PROJECT_ROOT/experiments/onnx/plain_resnet18"
-VEE_ONNX_DIR="$PROJECT_ROOT/experiments/onnx/vee_resnet18"
+# ── 0. 실험 디렉토리 결정 ────────────────────────────────────
+if [[ -n "${EXP_DIR:-}" ]]; then
+    # 환경변수로 직접 지정된 경우 (절대경로 또는 project_root 상대경로 모두 허용)
+    if [[ "$EXP_DIR" != /* ]]; then
+        EXP_DIR="$PROJECT_ROOT/$EXP_DIR"
+    fi
+    export EXP_DIR="$(realpath "$EXP_DIR")"
+else
+    # experiments/ 내 가장 최신 exp_* 디렉토리 자동 선택
+    LATEST_EXP=$(ls -d "$PROJECT_ROOT/experiments"/exp_* 2>/dev/null | sort | tail -1 || true)
+    if [[ -z "$LATEST_EXP" ]]; then
+        echo "[ERROR] experiments/ 내 exp_* 디렉토리가 없습니다."
+        echo "        5090에서 먼저 전송하세요:"
+        echo "        scp -r experiments/exp_YYYYMMDD_HHMMSS \\"
+        echo "            cap6@202.30.10.85:capstone-earlyexit/experiments/"
+        exit 1
+    fi
+    export EXP_DIR="$LATEST_EXP"
+fi
 
-EE_ENGINE_DIR="$PROJECT_ROOT/experiments/trt_engines/ee_resnet18"
-PLAIN_ENGINE_DIR="$PROJECT_ROOT/experiments/trt_engines/plain_resnet18"
-VEE_ENGINE_DIR="$PROJECT_ROOT/experiments/trt_engines/vee_resnet18"
+export EXP_NAME="$(basename "$EXP_DIR")"
+
+EE_ONNX_DIR="$EXP_DIR/onnx/ee_resnet18"
+PLAIN_ONNX_DIR="$EXP_DIR/onnx/plain_resnet18"
+VEE_ONNX_DIR="$EXP_DIR/onnx/vee_resnet18"
+
+EE_ENGINE_DIR="$EXP_DIR/trt_engines/ee_resnet18"
+PLAIN_ENGINE_DIR="$EXP_DIR/trt_engines/plain_resnet18"
+VEE_ENGINE_DIR="$EXP_DIR/trt_engines/vee_resnet18"
 
 THRESHOLD="${THRESHOLD:-0.80}"
 N_SAMPLES="${N_SAMPLES:-1000}"
 
 echo "================================================"
 echo "  EE / Plain / VEE / Hybrid  Orin Pipeline"
-echo "  Project root : $PROJECT_ROOT"
-echo "  Threshold    : $THRESHOLD"
-echo "  Samples      : $N_SAMPLES"
+echo "  Project root  : $PROJECT_ROOT"
+echo "  실험 디렉토리 : $EXP_NAME"
+echo "  Threshold     : $THRESHOLD"
+echo "  Samples       : $N_SAMPLES"
 echo "================================================"
 
 mkdir -p "$EE_ENGINE_DIR" "$PLAIN_ENGINE_DIR" "$VEE_ENGINE_DIR"
@@ -86,7 +114,6 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     echo "[2/8] Plain 엔진 빌드 (FP16, 동적 배치 1~32)..."
     PLAIN_ONNX="$PLAIN_ONNX_DIR/plain_resnet18.onnx"
     if [[ -f "$PLAIN_ONNX" ]]; then
-        # Plain 엔진은 Hybrid fallback에서 배치 추론에 사용되므로 동적 배치로 빌드
         trtexec --onnx="$PLAIN_ONNX" \
                 --saveEngine="$PLAIN_ENGINE_DIR/plain_resnet18.engine" \
                 --fp16 \
@@ -129,7 +156,7 @@ cd "$SRC_DIR"
 
 # ── 4. Plain vs EE 벤치마크 ──────────────────────────────────
 echo ""
-echo "[4/8] Plain vs EE 3-Segment 벤치마크 (p50/p90/p95/p99 포함)..."
+echo "[4/8] Plain vs EE 3-Segment 벤치마크..."
 python benchmark/benchmark_trt.py \
     --threshold "$THRESHOLD" \
     --num-samples "$N_SAMPLES"
@@ -137,7 +164,7 @@ echo "[4/8] 벤치마크 완료"
 
 # ── 5. 4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) ──────
 echo ""
-echo "[5/8] 4-Way 비교 벤치마크 (profiling_utils 지표 포함)..."
+echo "[5/8] 4-Way 비교 벤치마크 (latency dist + power + energy 포함)..."
 python benchmark/benchmark_trt_hybrid.py \
     --threshold      "$THRESHOLD" \
     --num-samples    "$N_SAMPLES" \
@@ -147,40 +174,41 @@ echo "[5/8] 4-Way 벤치마크 완료"
 
 # ── 6. Hybrid runtime grid search ────────────────────────────
 echo ""
-echo "[6/8] Hybrid grid search (batch_size × timeout)..."
-python infer/infer_trt_hybrid.py \
+echo "[6/8] Hybrid grid search (batch_size × timeout_ms)..."
+python benchmark/benchmark_hybrid_grid.py \
     --threshold    "$THRESHOLD" \
-    --num-samples  "$N_SAMPLES" \
-    --grid-search \
-    --batch-sizes  1 2 4 8 16 32 \
-    --timeouts     2 5 10 20 50
+    --num-samples  500 \
+    --batch-sizes  1 2 4 8 16 \
+    --timeout-ms   5 10 20 40
 echo "[6/8] Grid search 완료"
 
-# ── 7. TRT threshold sweep ────────────────────────────────────
+# ── 7. TRT threshold sweep (EE + VEE) ────────────────────────
 echo ""
-echo "[7/8] EE TRT threshold sweep (0.50~0.95)..."
+echo "[7/8] EE + VEE TRT threshold sweep (0.50~0.95)..."
 python infer/infer_trt.py \
-    --seg1  "$EE_ENGINE_DIR/seg1.engine"  \
-    --seg2  "$EE_ENGINE_DIR/seg2.engine"  \
-    --seg3  "$EE_ENGINE_DIR/seg3.engine"  \
-    --eval-cifar10 --sweep --num-samples "$N_SAMPLES"
+    --seg1     "$EE_ENGINE_DIR/seg1.engine"  \
+    --seg2     "$EE_ENGINE_DIR/seg2.engine"  \
+    --seg3     "$EE_ENGINE_DIR/seg3.engine"  \
+    --vee-seg1 "$VEE_ENGINE_DIR/vee_seg1.engine" \
+    --vee-seg2 "$VEE_ENGINE_DIR/vee_seg2.engine" \
+    --eval-cifar10 --sweep --sweep-vee --num-samples "$N_SAMPLES"
 echo "[7/8] Sweep 완료"
 
 # ── 8. 엔진 레이어 fusion 분석 ───────────────────────────────
 echo ""
-echo "[8/8] TRT 레이어 fusion 분석..."
+echo "[8/8] TRT 레이어 fusion 분석 (Plain / EE / VEE)..."
 python analysis/inspect_engines.py
 echo "[8/8] 분석 완료"
 
 echo ""
 echo "================================================"
 echo "  Orin 파이프라인 완료! (8단계)"
+echo "  실험 디렉토리 : $EXP_NAME"
 echo "  결과 위치:"
-echo "    $PROJECT_ROOT/experiments/eval/benchmark/"
-echo "    $PROJECT_ROOT/experiments/eval/benchmark_comparison/"
-echo "    $PROJECT_ROOT/experiments/eval/hybrid_runtime/"
-echo "    $PROJECT_ROOT/experiments/eval/trt_sweep/"
-echo "    $PROJECT_ROOT/experiments/eval/engine_inspect/"
+echo "    $EXP_DIR/eval/benchmark_comparison/"
+echo "    $EXP_DIR/eval/hybrid_grid/"
+echo "    $EXP_DIR/eval/trt_sweep/"
+echo "    $EXP_DIR/eval/engine_inspect/"
 echo ""
 echo "  NOTE: Hard sample 분석은 5090에서 별도 실행"
 echo "    cd src && python analysis/analyze_hard_samples.py --threshold $THRESHOLD"
