@@ -472,9 +472,9 @@ def main():
                 'threshold':   t,
                 'accuracy':    r['accuracy'],
                 'exit_rate':   r['exit_rate'],       # [ee1%, ee2%, main%]
-                'avg_ms':      r['avg_ms'],
-                'p50_ms':      r.get('p50_lat_ms'),
-                'p99_ms':      r.get('p99_lat_ms'),
+                'avg_ms':      r['avg_lat_ms'],
+                'p50_ms':      r['p50_lat_ms'],
+                'p99_ms':      r['p99_lat_ms'],
             }
         with open(json_path, 'w') as f:
             json.dump(json_data, f, indent=2)
@@ -513,9 +513,9 @@ def main():
                 'threshold':   t,
                 'accuracy':    r['accuracy'],
                 'exit_rate':   r['exit_rate'],       # [exit1%, main%]
-                'avg_ms':      r['avg_ms'],
-                'p50_ms':      r.get('p50_lat_ms'),
-                'p99_ms':      r.get('p99_lat_ms'),
+                'avg_ms':      r['avg_lat_ms'],
+                'p50_ms':      r['p50_lat_ms'],
+                'p99_ms':      r['p99_lat_ms'],
             }
         with open(json_path, 'w') as f:
             json.dump(json_data, f, indent=2)
