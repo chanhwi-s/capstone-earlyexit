@@ -89,7 +89,7 @@ mkdir -p "$EE_ENGINE_DIR" "$PLAIN_ENGINE_DIR" "$VEE_ENGINE_DIR"
 # ── 1. EE TRT 엔진 빌드 ─────────────────────────────────────
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     echo ""
-    echo "[1/8] EE 세그먼트 엔진 빌드 (FP16)..."
+    echo "[1/7] EE 세그먼트 엔진 빌드 (FP16)..."
     declare -A EE_ONNX_MAP=(
         [seg1]="seg1_stem_layer2.onnx"
         [seg2]="seg2_layer3.onnx"
@@ -107,11 +107,11 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
                 --fp16 --iterations=100 --warmUp=500 --avgRuns=100 \
                 2>&1 | tail -3
     done
-    echo "[1/8] EE 엔진 빌드 완료"
+    echo "[1/7] EE 엔진 빌드 완료"
 
     # ── 2. Plain TRT 엔진 빌드 ──
     echo ""
-    echo "[2/8] Plain 엔진 빌드 (FP16, 동적 배치 1~32)..."
+    echo "[2/7] Plain 엔진 빌드 (FP16, 동적 배치 1~32)..."
     PLAIN_ONNX="$PLAIN_ONNX_DIR/plain_resnet18.onnx"
     if [[ -f "$PLAIN_ONNX" ]]; then
         trtexec --onnx="$PLAIN_ONNX" \
@@ -122,14 +122,14 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
                 --maxShapes=input:32x3x32x32 \
                 --iterations=100 --warmUp=500 --avgRuns=100 \
                 2>&1 | tail -3
-        echo "[2/8] Plain 엔진 빌드 완료"
+        echo "[2/7] Plain 엔진 빌드 완료"
     else
         echo "[SKIP] $PLAIN_ONNX 없음"
     fi
 
     # ── 3. VEE TRT 엔진 빌드 ──
     echo ""
-    echo "[3/8] VEE 세그먼트 엔진 빌드 (FP16)..."
+    echo "[3/7] VEE 세그먼트 엔진 빌드 (FP16)..."
     declare -A VEE_ONNX_MAP=(
         [vee_seg1]="vee_seg1_stem_layer1.onnx"
         [vee_seg2]="vee_seg2_layer2to4.onnx"
@@ -146,35 +146,27 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
                 --fp16 --iterations=100 --warmUp=500 --avgRuns=100 \
                 2>&1 | tail -3
     done
-    echo "[3/8] VEE 엔진 빌드 완료"
+    echo "[3/7] VEE 엔진 빌드 완료"
 
 else
-    echo "[1-3/8] TRT 빌드 전체 스킵 (SKIP_BUILD=1)"
+    echo "[1-3/7] TRT 빌드 전체 스킵 (SKIP_BUILD=1)"
 fi
 
 cd "$SRC_DIR"
 
-# ── 4. Plain vs EE 벤치마크 ──────────────────────────────────
+# ── 4. 4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) ──────
 echo ""
-echo "[4/8] Plain vs EE 3-Segment 벤치마크..."
-python benchmark/benchmark_trt.py \
-    --threshold "$THRESHOLD" \
-    --num-samples "$N_SAMPLES"
-echo "[4/8] 벤치마크 완료"
-
-# ── 5. 4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) ──────
-echo ""
-echo "[5/8] 4-Way 비교 벤치마크 (latency dist + power + energy 포함)..."
+echo "[4/7] 4-Way 비교 벤치마크 (latency dist + power + energy 포함)..."
 python benchmark/benchmark_trt_hybrid.py \
     --threshold      "$THRESHOLD" \
     --num-samples    "$N_SAMPLES" \
     --hybrid-bs      8 \
     --hybrid-to-ms   10
-echo "[5/8] 4-Way 벤치마크 완료"
+echo "[5/7] 4-Way 벤치마크 완료"
 
-# ── 6. Hybrid runtime grid search ────────────────────────────
+# ── 5. Hybrid runtime grid search ────────────────────────────
 echo ""
-echo "[6/8] Hybrid grid search (batch_size × timeout_ms)..."
+echo "[5/7] Hybrid grid search (batch_size × timeout_ms)..."
 python benchmark/benchmark_hybrid_grid.py \
     --threshold    "$THRESHOLD" \
     --num-samples  500 \
@@ -184,7 +176,7 @@ echo "[6/8] Grid search 완료"
 
 # ── 7. TRT threshold sweep (EE + VEE) ────────────────────────
 echo ""
-echo "[7/8] EE + VEE TRT threshold sweep (0.50~0.95)..."
+echo "[6/7] EE + VEE TRT threshold sweep (0.50~0.95)..."
 python infer/infer_trt.py \
     --seg1     "$EE_ENGINE_DIR/seg1.engine"  \
     --seg2     "$EE_ENGINE_DIR/seg2.engine"  \
@@ -196,9 +188,9 @@ echo "[7/8] Sweep 완료"
 
 # ── 8. 엔진 레이어 fusion 분석 ───────────────────────────────
 echo ""
-echo "[8/8] TRT 레이어 fusion 분석 (Plain / EE / VEE)..."
+echo "[7/7] TRT 레이어 fusion 분석 (Plain / EE / VEE)..."
 python analysis/inspect_engines.py
-echo "[8/8] 분석 완료"
+echo "[7/7] 분석 완료"
 
 echo ""
 echo "================================================"
