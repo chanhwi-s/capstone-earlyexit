@@ -178,8 +178,8 @@ echo "[6/8] Hybrid grid search (batch_size × timeout_ms)..."
 python benchmark/benchmark_hybrid_grid.py \
     --threshold    "$THRESHOLD" \
     --num-samples  500 \
-    --batch-sizes  1 2 4 8 16 \
-    --timeout-ms   5 10 20 40
+    --batch-sizes  1 2 4 8 16 32 \
+    --timeout-ms   5 10 15 20 25 30 35 40
 echo "[6/8] Grid search 완료"
 
 # ── 7. TRT threshold sweep (EE + VEE) ────────────────────────
