@@ -231,7 +231,7 @@ def plot_grid_search(grid_results, batch_sizes, timeout_ms_list, threshold, save
             for ti in range(n_to):
                 val = mat[bi, ti]
                 if not np.isnan(val):
-                    fmt = f'{val:.3f}' if metric == 'accuracy' else f'{val:.1f}'
+                    fmt = f'{val:.3f}' if metric == 'accuracy' else f'{val:.3f}'
                     ax.text(ti, bi, fmt, ha='center', va='center',
                             fontsize=7, color='black')
 
@@ -365,6 +365,13 @@ def main():
     print(f"  로드 완료: {len(images)}개\n")
 
     # Grid Search
+    grid_results = run_grid_search(
+        vee_seg1, plain_engine, images, labels,
+        batch_sizes=args.batch_sizes,
+        timeout_ms_list=args.timeout_ms,
+        threshold=args.threshold,
+    )
+
     grid_results = run_grid_search(
         vee_seg1, plain_engine, images, labels,
         batch_sizes=args.batch_sizes,

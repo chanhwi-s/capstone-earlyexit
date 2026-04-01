@@ -406,17 +406,49 @@ def plot_comparison(all_stats, threshold, save_path):
 
     # ── Row 2-1: Latency Distribution (히스토그램 + 수직선) ───────────────────
     ax = axes[1][0]
+
+    # 1) 전체 label에 대해 P99 수집
+    global_p99 = []
+    for label in labels:
+        lats = all_stats[label].get('latencies_ms', [])
+        if lats:
+            arr = np.array(lats)
+            global_p99.append(np.percentile(arr, 99))
+
+    # x축 upper bound (가장 큰 P99 기준)
+    xmax = max(global_p99) * 1.1 if global_p99 else None
+
     for i, label in enumerate(labels):
         lats = all_stats[label].get('latencies_ms', [])
         if lats:
             arr = np.array(lats)
-            ax.hist(arr, bins=50, alpha=0.45, color=colors[i % 4], label=label, density=True)
+
+            # 2) P99 초과값은 시각화에서 제외
+            if xmax:
+                arr_plot = arr[arr <= xmax]
+            else:
+                arr_plot = arr
+
+            ax.hist(arr_plot, bins=50, alpha=0.45,
+                    color=colors[i % 4],
+                    label=label,
+                    density=True)
+
             p50 = np.percentile(arr, 50)
             p99 = np.percentile(arr, 99)
-            ax.axvline(p50, color=colors[i % 4], linestyle='--', linewidth=1.2,
-                       label=f'{label} P50={p50:.1f}ms')
-            ax.axvline(p99, color=colors[i % 4], linestyle=':',  linewidth=1.2,
-                       label=f'{label} P99={p99:.1f}ms')
+
+            ax.axvline(p50, color=colors[i % 4],
+                    linestyle='--', linewidth=1.2,
+                    label=f'{label} P50={p50:.1f}ms')
+
+            ax.axvline(p99, color=colors[i % 4],
+                    linestyle=':', linewidth=1.2,
+                    label=f'{label} P99={p99:.1f}ms')
+
+    # 3) x축 범위 고정
+    if xmax:
+        ax.set_xlim(0, xmax)
+
     ax.set_xlabel('Latency (ms)')
     ax.set_ylabel('Density')
     ax.set_title('Latency Distribution')
