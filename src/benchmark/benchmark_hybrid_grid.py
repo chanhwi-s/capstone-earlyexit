@@ -335,7 +335,7 @@ def main():
                         help='평가 샘플 수 (grid 전체에 공유, 빠른 탐색을 위해 500 권장)')
     parser.add_argument('--batch-sizes', type=int, nargs='+', default=[1, 2, 4, 8, 16],
                         help='탐색할 batch_size 후보 (예: 1 2 4 8 16)')
-    parser.add_argument('--timeout-ms',  type=float, nargs='+', default=[5.0, 10.0, 20.0, 40.0],
+    parser.add_argument('--timeout-ms',  type=float, nargs='+', default=[5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0],
                         help='탐색할 timeout 후보 (ms) (예: 5 10 20 40)')
     args = parser.parse_args()
 
