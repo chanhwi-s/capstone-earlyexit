@@ -8,16 +8,24 @@
 #        scp -r experiments/exp_YYYYMMDD_HHMMSS \
 #            cap6@202.30.10.85:capstone-earlyexit/experiments/
 #
+#  ★ 2-Step 워크플로우 ★
+#    이 스크립트는 TRT 빌드(Step 0~3.5)만 담당합니다.
+#    벤치마크는 아래 두 스크립트로 별도 실행하세요:
+#
+#    [Step 1] threshold 탐색 sweep (N번 반복):
+#      bash scripts/step1_sweep.sh <N>
+#      예) bash scripts/step1_sweep.sh 20
+#
+#    [Step 2] threshold 확정 후 benchmark (N번 반복):
+#      bash scripts/step2_benchmark.sh <N> <THRESHOLD>
+#      예) bash scripts/step2_benchmark.sh 30 0.80
+#
 #  실행 순서:
 #    0.   최신 exp_* 디렉토리 자동 감지 (또는 EXP_DIR 직접 지정)
 #    1.   EE  ONNX → TRT 엔진 빌드 (seg1/2/3, FP16)          ┐ SKIP_BUILD=1
 #    2.   Plain ONNX → TRT 엔진 빌드 (FP16, 동적 배치 1~32)  │ 이면 모두
 #    3.   VEE ONNX → TRT 엔진 빌드 (vee_seg1/vee_seg2, FP16) │ 스킵
 #    3.5. 엔진 레이어 fusion 분석 → exp_.../engine_inspect/   ┘
-#    ---  RUN_TIMESTAMP 설정 (이후 결과는 eval/run_YYYYMMDD_HHMMSS/ 에 격리)
-#    4.   Hybrid runtime grid search (batch_size × timeout)
-#    5.   4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) + profiling_utils 지표
-#    6.   TRT threshold sweep (EE + VEE)
 #
 #  NOTE: analyze_hard_samples.py 는 PyTorch 체크포인트가 필요하므로
 #        5090 서버에서 별도 실행:
@@ -26,15 +34,12 @@
 #  환경 변수:
 #    EXP_DIR=<path>    특정 실험 디렉토리 지정 (기본: 최신 exp_* 자동 감지)
 #    SKIP_BUILD=1      TRT 빌드 스킵 (엔진이 이미 존재할 때)
-#    THRESHOLD=0.80    confidence threshold (기본값)
-#    N_SAMPLES=1000    샘플 수
 #
 #  사용법:
 #    cd <project_root>
 #    bash scripts/orin_pipeline.sh                          # 최신 실험 자동 감지
-#    SKIP_BUILD=1 bash scripts/orin_pipeline.sh             # 빌드 스킵
+#    SKIP_BUILD=1 bash scripts/orin_pipeline.sh             # 빌드 스킵 (engine_inspect만)
 #    EXP_DIR=experiments/exp_20260401_120000 bash scripts/orin_pipeline.sh  # 직접 지정
-#    SKIP_BUILD=1 THRESHOLD=0.85 N_SAMPLES=2000 bash scripts/orin_pipeline.sh
 # ============================================================
 
 set -euo pipefail
@@ -77,11 +82,9 @@ THRESHOLD="${THRESHOLD:-0.80}"
 N_SAMPLES="${N_SAMPLES:-1000}"
 
 echo "================================================"
-echo "  EE / Plain / VEE / Hybrid  Orin Pipeline"
+echo "  Orin TRT 빌드 파이프라인"
 echo "  Project root  : $PROJECT_ROOT"
 echo "  실험 디렉토리 : $EXP_NAME"
-echo "  Threshold     : $THRESHOLD"
-echo "  Samples       : $N_SAMPLES"
 echo "================================================"
 
 mkdir -p "$EE_ENGINE_DIR" "$PLAIN_ENGINE_DIR" "$VEE_ENGINE_DIR"
@@ -160,68 +163,21 @@ else
     echo "[1-3/7] TRT 빌드 + engine_inspect 전체 스킵 (SKIP_BUILD=1)"
 fi
 
-cd "$SRC_DIR"
-
-# ── 실행별 타임스탬프 설정 (step 4~6 결과를 덮어쓰기 방지) ──────────────────
-export RUN_TIMESTAMP="run_$(date +%Y%m%d_%H%M%S)"
-echo ""
-echo "  📁 이번 실행 결과 디렉토리: eval/$RUN_TIMESTAMP/"
-
-# ── 4. Hybrid runtime grid search ────────────────────────────
-echo ""
-echo "[4/7] Hybrid grid search (batch_size × timeout_ms)..."
-GRID_OUTPUT=$(python benchmark/benchmark_hybrid_grid.py \
-    --threshold         "$THRESHOLD" \
-    --num-samples       500 \
-    --batch-sizes       2 4 8 16 \
-    --timeout-ms        5 10 15 20 25 30 35 40 \
-    --print-best-params 2>&1 | tee /dev/stderr | grep '^BEST_BS=')
-echo "[4/7] Grid search 완료"
-
-# 최적 파라미터 파싱 (BEST_BS=N BEST_TO=M)
-BEST_BS=$(echo "$GRID_OUTPUT" | grep -oP 'BEST_BS=\K[0-9]+' | tail -1)
-BEST_TO=$(echo "$GRID_OUTPUT" | grep -oP 'BEST_TO=\K[0-9.]+' | tail -1)
-
-# fallback: 파싱 실패 시 기본값
-BEST_BS="${BEST_BS:-8}"
-BEST_TO="${BEST_TO:-10}"
-echo "  → 최적 파라미터: hybrid-bs=${BEST_BS}, hybrid-to-ms=${BEST_TO}"
-
-# ── 5. 4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) ──────
-echo ""
-echo "[5/7] 4-Way 비교 벤치마크 (grid 최적값 hybrid-bs=${BEST_BS} to=${BEST_TO}ms)..."
-python benchmark/benchmark_trt_hybrid.py \
-    --threshold      "$THRESHOLD" \
-    --num-samples    "$N_SAMPLES" \
-    --hybrid-bs      "$BEST_BS" \
-    --hybrid-to-ms   "$BEST_TO"
-echo "[5/7] 4-Way 벤치마크 완료"
-
-# ── 7. TRT threshold sweep (EE + VEE) ────────────────────────
-echo ""
-echo "[6/7] EE + VEE TRT threshold sweep (0.50~0.95)..."
-python infer/infer_trt.py \
-    --seg1     "$EE_ENGINE_DIR/seg1.engine"  \
-    --seg2     "$EE_ENGINE_DIR/seg2.engine"  \
-    --seg3     "$EE_ENGINE_DIR/seg3.engine"  \
-    --vee-seg1 "$VEE_ENGINE_DIR/vee_seg1.engine" \
-    --vee-seg2 "$VEE_ENGINE_DIR/vee_seg2.engine" \
-    --eval-cifar10 --sweep --sweep-vee --num-samples "$N_SAMPLES"
-echo "[7/8] Sweep 완료"
-
 echo ""
 echo "================================================"
-echo "  Orin 파이프라인 완료!"
+echo "  빌드 완료!"
 echo "  실험 디렉토리 : $EXP_NAME"
-echo "  결과 위치:"
-echo "    (런별 벤치마크)  $EXP_DIR/eval/$RUN_TIMESTAMP/"
-echo "      ├── benchmark_comparison/"
-echo "      ├── hybrid_grid/"
-echo "      └── trt_sweep/"
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-echo "    (엔진 분석)     $EXP_DIR/engine_inspect/"
+echo "  엔진 분석 결과: $EXP_DIR/engine_inspect/"
 fi
 echo ""
+echo "  다음 단계:"
+echo "    [Step 1] threshold sweep (N번 반복):"
+echo "      bash scripts/step1_sweep.sh <N>"
+echo ""
+echo "    [Step 2] threshold 확정 후 benchmark:"
+echo "      bash scripts/step2_benchmark.sh <N> <THRESHOLD>"
+echo ""
 echo "  NOTE: Hard sample 분석은 5090에서 별도 실행"
-echo "    cd src && python analysis/analyze_hard_samples.py --threshold $THRESHOLD"
+echo "    cd src && python analysis/analyze_hard_samples.py --threshold <THRESHOLD>"
 echo "================================================"
