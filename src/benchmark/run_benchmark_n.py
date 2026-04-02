@@ -257,6 +257,7 @@ def save_benchmark_csv(all_runs: list, out_path: str):
                    for k, v in stats.items()},
             })
     fieldnames = list(rows[0].keys())
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -281,6 +282,7 @@ def save_grid_csv(all_grid_runs: list, out_path: str):
             })
     if not rows:
         return
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()

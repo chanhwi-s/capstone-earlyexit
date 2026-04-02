@@ -316,6 +316,7 @@ def save_summary_csv(results: dict, out_path: str, model: str):
             'p50_mean':     round(s['p50_mean'], 4),
             'p50_std':      round(s['p50_std'],  4),
         })
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -461,6 +462,7 @@ def plot_summary(results: dict, title: str, save_path: str, exit_labels: list):
 
 def save_raw_json(results: dict, out_path: str, metadata: dict):
     """raw latency 포함 전체 데이터를 JSON으로 저장."""
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     # latencies_ms는 리스트 → JSON 직렬화 가능
     data = {'metadata': metadata, 'results': results}
     with open(out_path, 'w') as f:
