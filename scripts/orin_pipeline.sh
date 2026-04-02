@@ -154,25 +154,35 @@ fi
 
 cd "$SRC_DIR"
 
-# ── 4. 4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) ──────
+# ── 4. Hybrid runtime grid search ────────────────────────────
 echo ""
-echo "[4/7] 4-Way 비교 벤치마크 (latency dist + power + energy 포함)..."
+echo "[4/7] Hybrid grid search (batch_size × timeout_ms)..."
+GRID_OUTPUT=$(python benchmark/benchmark_hybrid_grid.py \
+    --threshold         "$THRESHOLD" \
+    --num-samples       500 \
+    --batch-sizes       2 4 8 16 \
+    --timeout-ms        5 10 15 20 25 30 35 40 \
+    --print-best-params 2>&1 | tee /dev/stderr | grep '^BEST_BS=')
+echo "[4/7] Grid search 완료"
+
+# 최적 파라미터 파싱 (BEST_BS=N BEST_TO=M)
+BEST_BS=$(echo "$GRID_OUTPUT" | grep -oP 'BEST_BS=\K[0-9]+' | tail -1)
+BEST_TO=$(echo "$GRID_OUTPUT" | grep -oP 'BEST_TO=\K[0-9.]+' | tail -1)
+
+# fallback: 파싱 실패 시 기본값
+BEST_BS="${BEST_BS:-8}"
+BEST_TO="${BEST_TO:-10}"
+echo "  → 최적 파라미터: hybrid-bs=${BEST_BS}, hybrid-to-ms=${BEST_TO}"
+
+# ── 5. 4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) ──────
+echo ""
+echo "[5/7] 4-Way 비교 벤치마크 (grid 최적값 hybrid-bs=${BEST_BS} to=${BEST_TO}ms)..."
 python benchmark/benchmark_trt_hybrid.py \
     --threshold      "$THRESHOLD" \
     --num-samples    "$N_SAMPLES" \
-    --hybrid-bs      8 \
-    --hybrid-to-ms   10
+    --hybrid-bs      "$BEST_BS" \
+    --hybrid-to-ms   "$BEST_TO"
 echo "[5/7] 4-Way 벤치마크 완료"
-
-# ── 5. Hybrid runtime grid search ────────────────────────────
-echo ""
-echo "[5/7] Hybrid grid search (batch_size × timeout_ms)..."
-python benchmark/benchmark_hybrid_grid.py \
-    --threshold    "$THRESHOLD" \
-    --num-samples  500 \
-    --batch-sizes  2 4 8 16 \
-    --timeout-ms   5 10 15 20 25 30 35 40
-echo "[6/8] Grid search 완료"
 
 # ── 7. TRT threshold sweep (EE + VEE) ────────────────────────
 echo ""

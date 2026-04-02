@@ -140,40 +140,67 @@ def bench_hybrid_once(vee_seg1, plain_engine, images, labels,
 
 # ── Grid Search 실행 ─────────────────────────────────────────────────────────
 
+def _run_single(vee_seg1, plain_engine, images, labels,
+                threshold, bs, to_ms, tag="", done=0, total=0):
+    """단일 (bs, to_ms) 조합 실행 후 결과 출력."""
+    try:
+        r = bench_hybrid_once(vee_seg1, plain_engine, images, labels,
+                              threshold, bs, to_ms)
+        suffix = f"  [{done}/{total}]" if total else f"  {tag}"
+        print(f"  {bs:>4}  {to_ms:>7.1f}  "
+              f"{r['avg_ms']:>8.2f}  {r['p99_ms']:>8.2f}  "
+              f"{r['avg_throughput']:>8.1f}  "
+              f"{r['exit1_rate']:>7.1f}  {r['fallback_rate']:>6.1f}"
+              f"{suffix}")
+        return r
+    except Exception as e:
+        print(f"  {bs:>4}  {to_ms:>7.1f}  ERROR: {e}")
+        return None
+
+
 def run_grid_search(vee_seg1, plain_engine, images, labels,
                     batch_sizes, timeout_ms_list, threshold):
     """(batch_size × timeout_ms) 전체 grid 실행.
+
+    워밍업 전략:
+      본 grid 실행 전, 첫 번째 batch_size에 대해 모든 timeout을 한 사이클
+      실행하여 엔진·스케줄러 warm-up 수행 (결과는 버림).
 
     Returns:
         grid_results: dict[(bs, to_ms)] = result_dict
     """
     total = len(batch_sizes) * len(timeout_ms_list)
-    done  = 0
-    grid_results = {}
 
+    # ── Warm-up: 첫 번째 batch_size × 전체 timeout 한 사이클 ──────────────────
+    warmup_bs = batch_sizes[0]
+    print(f"\n{'='*70}")
+    print(f"  [Warm-up]  bs={warmup_bs} × {len(timeout_ms_list)}개 timeout  (결과 버림)")
+    print(f"{'='*70}")
+    print(f"  {'bs':>4}  {'to_ms':>7}  {'avg_ms':>8}  {'p99_ms':>8}  "
+          f"{'tp':>8}  {'exit1%':>7}  {'fb%':>6}")
+    print(f"  {'-'*70}")
+    for to_ms in timeout_ms_list:
+        _run_single(vee_seg1, plain_engine, images, labels,
+                    threshold, warmup_bs, to_ms, tag="[warm-up]")
+
+    # ── 본 Grid Search ────────────────────────────────────────────────────────
+    done = 0
+    grid_results = {}
     print(f"\n{'='*70}")
     print(f"  Hybrid Grid Search  |  threshold={threshold}  |  총 {total}개 조합")
     print(f"{'='*70}")
-    print(f"  {'bs':>4}  {'to_ms':>7}  {'acc':>7}  {'avg_ms':>8}  {'p99_ms':>8}  "
+    print(f"  {'bs':>4}  {'to_ms':>7}  {'avg_ms':>8}  {'p99_ms':>8}  "
           f"{'tp':>8}  {'exit1%':>7}  {'fb%':>6}")
     print(f"  {'-'*70}")
 
     for bs in batch_sizes:
         for to_ms in timeout_ms_list:
             done += 1
-            key  = (bs, to_ms)
-            try:
-                r = bench_hybrid_once(vee_seg1, plain_engine, images, labels,
-                                      threshold, bs, to_ms)
-                grid_results[key] = r
-                print(f"  {bs:>4}  {to_ms:>7.1f}  "
-                      f"{r['accuracy']:>7.4f}  {r['avg_ms']:>8.2f}  "
-                      f"{r['p99_ms']:>8.2f}  {r['avg_throughput']:>8.1f}  "
-                      f"{r['exit1_rate']:>7.1f}  {r['fallback_rate']:>6.1f}  "
-                      f"  [{done}/{total}]")
-            except Exception as e:
-                print(f"  {bs:>4}  {to_ms:>7.1f}  ERROR: {e}")
-                grid_results[key] = None
+            key = (bs, to_ms)
+            grid_results[key] = _run_single(
+                vee_seg1, plain_engine, images, labels,
+                threshold, bs, to_ms, done=done, total=total,
+            )
 
     return grid_results
 
@@ -193,12 +220,12 @@ def plot_grid_search(grid_results, batch_sizes, timeout_ms_list, threshold, save
     n_to    = len(to_list)
 
     metrics_heatmap = [
-        ('avg_ms',         'Avg Latency (ms)',      'YlOrRd'),
-        ('p99_ms',         'P99 Latency (ms)',       'YlOrRd'),
-        ('avg_throughput', 'Avg Throughput (inf/s)', 'YlGn'),
-        ('p99_goodput',    'P99 Goodput (inf/s)',    'YlGn'),
-        ('accuracy',       'Accuracy',               'Blues'),
-        ('tail_ratio_p99_p50', 'P99/P50 Tail Ratio','PuRd'),
+        ('avg_ms',             'Avg Latency (ms)',      'YlOrRd'),
+        ('p99_ms',             'P99 Latency (ms)',      'YlOrRd'),
+        ('avg_throughput',     'Avg Throughput (inf/s)','YlGn'),
+        ('p99_goodput',        'P99 Goodput (inf/s)',   'YlGn'),
+        ('tail_ratio_p99_p50', 'P99/P50 Tail Ratio',   'PuRd'),
+        ('exit1_rate',         'Exit1 Rate (%)',        'Blues'),
     ]
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
@@ -257,9 +284,9 @@ def plot_grid_search(grid_results, batch_sizes, timeout_ms_list, threshold, save
     fig2.suptitle(f'Hybrid Grid — Line Plots  (threshold={threshold})', fontsize=12)
 
     line_metrics = [
-        ('avg_ms',         'Avg Latency (ms)',        False),
-        ('avg_throughput', 'Avg Throughput (inf/s)',   True),
-        ('accuracy',       'Accuracy',                 True),
+        ('avg_ms',             'Avg Latency (ms)',      False),
+        ('p99_ms',             'P99 Latency (ms)',      False),
+        ('avg_throughput',     'Avg Throughput (inf/s)', True),
     ]
     lcolors = plt.cm.tab10(np.linspace(0, 1, n_bs))
 
@@ -325,6 +352,15 @@ def print_best_summary(grid_results):
 
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 
+def get_best_params(grid_results) -> tuple[int, float] | None:
+    """P99 latency가 가장 낮은 (batch_size, timeout_ms) 반환."""
+    valid = {k: v for k, v in grid_results.items() if v is not None}
+    if not valid:
+        return None
+    best_key = min(valid, key=lambda k: valid[k].get('p99_ms', float('inf')))
+    return best_key   # (batch_size, timeout_ms)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Hybrid Runtime Grid Search: batch_size × timeout_ms')
@@ -337,6 +373,8 @@ def main():
                         help='탐색할 batch_size 후보 (예: 1 2 4 8 16)')
     parser.add_argument('--timeout-ms',  type=float, nargs='+', default=[5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0],
                         help='탐색할 timeout 후보 (ms) (예: 5 10 20 40)')
+    parser.add_argument('--print-best-params', action='store_true',
+                        help='완료 후 최적 bs/timeout을 "BEST_BS=N BEST_TO=M" 형식으로 출력 (shell eval용)')
     args = parser.parse_args()
 
     # 경로 자동 선택
@@ -372,13 +410,6 @@ def main():
         threshold=args.threshold,
     )
 
-    grid_results = run_grid_search(
-        vee_seg1, plain_engine, images, labels,
-        batch_sizes=args.batch_sizes,
-        timeout_ms_list=args.timeout_ms,
-        threshold=args.threshold,
-    )
-
     # 최적 요약
     print_best_summary(grid_results)
 
@@ -404,6 +435,17 @@ def main():
         grid_results, args.batch_sizes, args.timeout_ms,
         args.threshold, png_path,
     )
+
+    # 최적 파라미터 출력 (orin_pipeline.sh eval용)
+    best = get_best_params(grid_results)
+    if best:
+        best_bs, best_to = best
+        best_p99 = grid_results[best]['p99_ms']
+        print(f"\n▶ 최적 조합 (P99 기준): bs={best_bs}, timeout={best_to:.1f}ms  "
+              f"→ P99={best_p99:.2f}ms")
+        if args.print_best_params:
+            # shell eval을 위한 parseable 출력 (반드시 마지막 줄)
+            print(f"BEST_BS={best_bs} BEST_TO={best_to}")
 
 
 if __name__ == '__main__':
