@@ -5,16 +5,25 @@
 #  Step 1 (step1_sweep.sh) 결과를 보고 threshold를 결정한 뒤,
 #  이 스크립트로 Grid Search + 4-Way Benchmark를 N번 반복합니다.
 #
-#  실행 순서 (1회):
-#    1.  Hybrid Grid Search (batch_size × timeout_ms)
-#        → P99 latency 기준으로 최적 (bs, timeout) 자동 선택
-#    2.  4-Way Benchmark: Plain / EE / VEE / Hybrid (최적 파라미터 사용)
-#  위 과정을 N번 반복 후 전체 결과를 CSV로 자동 집계
+#  내부 동작:
+#    - 엔진 / 데이터를 한 번만 로드하고 N번 반복
+#    - 각 실행: Grid Search → 최적 (bs, timeout) → 4-Way Benchmark
+#    - 실행마다 디렉토리 생성 없음 → 단일 디렉토리에 통합 저장
+#    - 실행마다 그래프 생성 없음 → 최종 한 번만 생성
+#
+#  출력 디렉토리 (단일):
+#    experiments/exp_.../eval/benchmark_N{N}_thr{thr}_YYYYMMDD_HHMMSS/
+#      ├── grid_raw.json            ← N회 × grid 탐색 결과
+#      ├── grid_summary.csv         ← (bs, to)별 통계
+#      ├── benchmark_raw.json       ← N회 × 4-way 비교 결과
+#      ├── benchmark_summary.csv    ← 모델별 통계 (mean/std)
+#      └── benchmark_comparison.png ← 모델별 latency distribution (한 번만)
 #
 #  사용법:
 #    bash scripts/step2_benchmark.sh <N> <THRESHOLD>
 #    bash scripts/step2_benchmark.sh 30 0.80
 #    N_SAMPLES=1000 bash scripts/step2_benchmark.sh 30 0.80
+#    DATASET=imagenet bash scripts/step2_benchmark.sh 30 0.80
 #
 #  백그라운드 실행 (SSH 끊겨도 유지):
 #    nohup bash scripts/step2_benchmark.sh 30 0.80 > step2_benchmark.log 2>&1 &
@@ -23,21 +32,10 @@
 #  환경변수:
 #    N_SAMPLES=1000        benchmark당 샘플 수 (기본 1000)
 #    GRID_SAMPLES=500      grid search당 샘플 수 (기본 500)
-#    BATCH_SIZES="2 4 8 16"        grid 탐색 batch_size 후보
+#    DATASET=cifar10       cifar10 | imagenet (기본 cifar10)
+#    BATCH_SIZES="2 4 8 16"         grid 탐색 batch_size 후보
 #    TIMEOUT_MS="5 10 15 20 25 30 35 40"   grid 탐색 timeout 후보
 #    EXP_DIR=<path>        실험 디렉토리 (기본: 최신 exp_* 자동 감지)
-#
-#  결과 위치:
-#    experiments/exp_.../eval/run_YYYYMMDD_HHMMSS/
-#      ├── hybrid_grid/
-#      │   ├── grid_search_thr{thr}.json
-#      │   └── grid_search_thr{thr}.png
-#      └── benchmark_comparison/
-#          ├── compare_thr{thr}.json
-#          └── compare_thr{thr}.png
-#    experiments/exp_.../eval/
-#      ├── aggregate_grid_thr{thr}_YYYYMMDD.csv       ← Grid 집계
-#      └── aggregate_benchmark_thr{thr}_YYYYMMDD.csv  ← Benchmark 집계
 # ============================================================
 
 set -euo pipefail
@@ -88,113 +86,37 @@ export EXP_NAME="$(basename "$EXP_DIR")"
 # ── 파라미터 기본값 ──────────────────────────────────────────
 N_SAMPLES="${N_SAMPLES:-1000}"
 GRID_SAMPLES="${GRID_SAMPLES:-500}"
+DATASET="${DATASET:-cifar10}"
 BATCH_SIZES="${BATCH_SIZES:-2 4 8 16}"
 TIMEOUT_MS="${TIMEOUT_MS:-5 10 15 20 25 30 35 40}"
-AGGREGATE_TS="$(date +%Y%m%d_%H%M%S)"
 
 echo "================================================"
 echo "  Step 2: Grid Search + 4-Way Benchmark"
 echo "  반복 횟수  : $N"
 echo "  Threshold  : $THRESHOLD"
 echo "  Samples    : $N_SAMPLES  (grid: $GRID_SAMPLES)"
+echo "  Dataset    : $DATASET"
 echo "  Batch sizes: $BATCH_SIZES"
 echo "  Timeout ms : $TIMEOUT_MS"
 echo "  실험 디렉  : $EXP_NAME"
 echo "  시작 시각  : $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  출력 위치  : eval/benchmark_N${N}_thr${THRESHOLD}_YYYYMMDD_HHMMSS/ (단일 디렉토리)"
 echo "================================================"
-
-PASS=0
-FAIL=0
 
 cd "$SRC_DIR"
 
-for i in $(seq 1 "$N"); do
-    echo ""
-    echo "────────────────────────────────────────────────"
-    echo "  Benchmark Run $i / $N   $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "────────────────────────────────────────────────"
-
-    export RUN_TIMESTAMP="run_$(date +%Y%m%d_%H%M%S)"
-    echo "  📁 결과 디렉: eval/$RUN_TIMESTAMP/"
-
-    RUN_FAILED=false
-
-    # ── [1/2] Hybrid Grid Search ──────────────────────────────
-    echo ""
-    echo "  [1/2] Hybrid Grid Search  (bs: $BATCH_SIZES | to: $TIMEOUT_MS)"
-
-    # tee로 실시간 출력 유지하면서 BEST_BS= 라인만 추출
-    GRID_LOG="$(mktemp)"
-    if python benchmark/benchmark_hybrid_grid.py \
-        --threshold         "$THRESHOLD" \
-        --num-samples       "$GRID_SAMPLES" \
-        --batch-sizes       $BATCH_SIZES \
-        --timeout-ms        $TIMEOUT_MS \
-        --print-best-params 2>&1 | tee "$GRID_LOG"; then
-
-        BEST_LINE=$(grep '^BEST_BS=' "$GRID_LOG" | tail -1 || true)
-        BEST_BS=$(echo "$BEST_LINE" | grep -oP 'BEST_BS=\K[0-9]+' || true)
-        BEST_TO=$(echo "$BEST_LINE" | grep -oP 'BEST_TO=\K[0-9.]+' || true)
-        rm -f "$GRID_LOG"
-
-        BEST_BS="${BEST_BS:-8}"
-        BEST_TO="${BEST_TO:-10}"
-        echo "  → Grid Search 완료: 최적 hybrid-bs=${BEST_BS}, hybrid-to-ms=${BEST_TO}"
-    else
-        rm -f "$GRID_LOG"
-        BEST_BS=8
-        BEST_TO=10
-        echo "  [WARN] Grid Search 실패, fallback: bs=${BEST_BS}, to=${BEST_TO}"
-        RUN_FAILED=true
-    fi
-
-    # ── [2/2] 4-Way Benchmark ────────────────────────────────
-    echo ""
-    echo "  [2/2] 4-Way Benchmark  (hybrid-bs=${BEST_BS}, to=${BEST_TO}ms)"
-
-    if python benchmark/benchmark_trt_hybrid.py \
-        --threshold    "$THRESHOLD" \
-        --num-samples  "$N_SAMPLES" \
-        --hybrid-bs    "$BEST_BS" \
-        --hybrid-to-ms "$BEST_TO"; then
-        echo "  [OK] Benchmark Run $i 완료  →  eval/$RUN_TIMESTAMP/"
-    else
-        echo "  [FAIL] 4-Way Benchmark 실패"
-        RUN_FAILED=true
-    fi
-
-    if $RUN_FAILED; then
-        FAIL=$((FAIL + 1))
-    else
-        PASS=$((PASS + 1))
-    fi
-
-    # 동일 초 타임스탬프 충돌 방지
-    sleep 1
-done
-
-echo ""
-echo "================================================"
-echo "  Benchmark 반복 완료: 성공 $PASS / $N   실패 $FAIL / $N"
-echo "  집계 중..."
-echo "================================================"
-
-# ── 결과 집계 ────────────────────────────────────────────────
-OUT_GRID="$EXP_DIR/eval/aggregate_grid_thr${THRESHOLD}_${AGGREGATE_TS}.csv"
-OUT_BENCH="$EXP_DIR/eval/aggregate_benchmark_thr${THRESHOLD}_${AGGREGATE_TS}.csv"
-
-python analysis/aggregate_results.py \
-    --mode       benchmark \
-    --exp-dir    "$EXP_DIR" \
-    --threshold  "$THRESHOLD" \
-    --out-grid   "$OUT_GRID" \
-    --out-bench  "$OUT_BENCH"
+# ── run_benchmark_n.py 호출 (단일 호출, 내부에서 N번 반복) ───
+python benchmark/run_benchmark_n.py \
+    --n            "$N" \
+    --threshold    "$THRESHOLD" \
+    --dataset      "$DATASET" \
+    --num-samples  "$N_SAMPLES" \
+    --grid-samples "$GRID_SAMPLES" \
+    --batch-sizes  $BATCH_SIZES \
+    --timeout-ms   $TIMEOUT_MS
 
 echo ""
 echo "================================================"
 echo "  Step 2 완료!"
-echo "  집계 결과:"
-echo "    Grid Search → $OUT_GRID"
-echo "    Benchmark   → $OUT_BENCH"
 echo "  종료 시각: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "================================================"
