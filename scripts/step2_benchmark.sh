@@ -88,7 +88,7 @@ N_SAMPLES="${N_SAMPLES:-1000}"
 GRID_SAMPLES="${GRID_SAMPLES:-500}"
 DATASET="${DATASET:-cifar10}"
 BATCH_SIZES="${BATCH_SIZES:-2 4 8 16}"
-TIMEOUT_MS="${TIMEOUT_MS:-5 10 15 20 25 30 35 40}"
+TIMEOUT_MS="${TIMEOUT_MS:-1 1.25 1.5 1.75 2 2.25 2.5 2.75 3}"
 
 echo "================================================"
 echo "  Step 2: Grid Search + 4-Way Benchmark"
