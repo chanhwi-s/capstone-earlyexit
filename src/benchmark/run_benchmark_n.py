@@ -290,6 +290,118 @@ def save_grid_csv(all_grid_runs: list, out_path: str):
     print(f'  Grid CSV 저장: {out_path}')
 
 
+# ── Grid Best 통계 ────────────────────────────────────────────────────────────
+
+def save_grid_best_csv(all_grid_runs: list, out_path: str):
+    """
+    N회 grid search에서 best로 선택된 (bs, to) 조합의 빈도 CSV.
+    columns: batch_size, timeout_ms, count, pct
+    """
+    from collections import Counter
+    counter = Counter(
+        (best_bs, best_to)
+        for _, best_bs, best_to in all_grid_runs
+    )
+    n_total = len(all_grid_runs)
+    rows = [
+        {
+            'batch_size':  bs,
+            'timeout_ms':  to,
+            'count':       cnt,
+            'pct':         round(cnt / n_total * 100, 2),
+        }
+        for (bs, to), cnt in sorted(counter.items(), key=lambda x: -x[1])
+    ]
+    if not rows:
+        return
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['batch_size', 'timeout_ms', 'count', 'pct'])
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f'  Grid Best CSV 저장: {out_path}')
+
+
+def print_grid_best_summary(all_grid_runs: list):
+    """터미널에 best (bs, to) 빈도 테이블 출력."""
+    from collections import Counter
+    counter = Counter(
+        (best_bs, best_to)
+        for _, best_bs, best_to in all_grid_runs
+    )
+    n_total = len(all_grid_runs)
+    print(f'\n  {"─" * 44}')
+    print(f'  Grid Best 조합 빈도  (총 {n_total}회)')
+    print(f'  {"─" * 44}')
+    print(f'  {"bs":>5}  {"timeout(ms)":>12}  {"count":>7}  {"pct":>8}')
+    print(f'  {"─" * 44}')
+    for (bs, to), cnt in sorted(counter.items(), key=lambda x: -x[1]):
+        bar = '█' * int(cnt / n_total * 20)
+        print(f'  {bs:>5}  {to:>12}  {cnt:>7}  {cnt/n_total*100:>7.1f}%  {bar}')
+    print(f'  {"─" * 44}')
+
+    # 최빈 조합 강조
+    if counter:
+        (top_bs, top_to), top_cnt = counter.most_common(1)[0]
+        print(f'  ★ 최빈 조합: bs={top_bs}, timeout={top_to}ms  '
+              f'({top_cnt}/{n_total}회, {top_cnt/n_total*100:.1f}%)')
+
+
+def plot_grid_best_heatmap(all_grid_runs: list, save_path: str):
+    """
+    N회 grid search에서 best 선택 빈도를 히트맵으로 시각화.
+    X축: timeout_ms, Y축: batch_size
+    """
+    from collections import Counter
+    import matplotlib.ticker as mticker
+
+    counter = Counter(
+        (best_bs, best_to)
+        for _, best_bs, best_to in all_grid_runs
+    )
+    if not counter:
+        return
+
+    all_bs  = sorted(set(bs for bs, _ in counter))
+    all_to  = sorted(set(to for _, to in counter))
+    n_total = len(all_grid_runs)
+
+    # 히트맵 행렬 (행=bs, 열=to)
+    matrix = np.zeros((len(all_bs), len(all_to)))
+    for (bs, to), cnt in counter.items():
+        r = all_bs.index(bs)
+        c = all_to.index(to)
+        matrix[r, c] = cnt / n_total * 100  # %로 표시
+
+    fig, ax = plt.subplots(figsize=(max(6, len(all_to) * 0.9), max(4, len(all_bs) * 0.8)))
+    im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto', vmin=0, vmax=100)
+
+    ax.set_xticks(range(len(all_to)))
+    ax.set_yticks(range(len(all_bs)))
+    ax.set_xticklabels([str(t) for t in all_to], rotation=45, ha='right')
+    ax.set_yticklabels([str(b) for b in all_bs])
+    ax.set_xlabel('Timeout (ms)')
+    ax.set_ylabel('Batch Size')
+    ax.set_title(f'Grid Best Selection Frequency (%)  —  N={n_total}회')
+
+    # 셀마다 수치 표시
+    for r in range(len(all_bs)):
+        for c in range(len(all_to)):
+            val = matrix[r, c]
+            if val > 0:
+                ax.text(c, r, f'{val:.0f}%',
+                        ha='center', va='center',
+                        fontsize=9, color='black' if val < 60 else 'white',
+                        fontweight='bold')
+
+    plt.colorbar(im, ax=ax, label='선택 빈도 (%)')
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Grid Best 히트맵 저장: {save_path}')
+
+
 # ── Plot ──────────────────────────────────────────────────────────────────────
 
 def plot_benchmark_results(all_runs: list, threshold: float, save_path: str):
@@ -588,11 +700,16 @@ def main():
     # CSV
     save_grid_csv(all_grid_runs, os.path.join(out_dir, 'grid_summary.csv'))
     save_benchmark_csv(all_benchmark_runs, os.path.join(out_dir, 'benchmark_summary.csv'))
+    save_grid_best_csv(all_grid_runs, os.path.join(out_dir, 'grid_best_stats.csv'))
 
     # Plot
     plot_benchmark_results(
         all_benchmark_runs, args.threshold,
         os.path.join(out_dir, 'benchmark_comparison.png'),
+    )
+    plot_grid_best_heatmap(
+        all_grid_runs,
+        os.path.join(out_dir, 'grid_best_heatmap.png'),
     )
 
     # 요약 통계 출력
@@ -611,6 +728,10 @@ def main():
                   f'{np.mean(p99s):>10.2f}ms  '
                   f'{np.std(p99s):>10.2f}ms  '
                   f'{np.mean(accs):>10.4f}')
+
+    # Grid best 조합 빈도 터미널 출력
+    if all_grid_runs:
+        print_grid_best_summary(all_grid_runs)
 
     print(f'\n  결과 저장: {out_dir}/')
     print(f'{"=" * 60}\n')
