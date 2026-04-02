@@ -671,7 +671,7 @@ def main():
         print_comparison(all_stats, args.threshold, n)
 
     # ── 저장 ──
-    out_dir = paths.eval_dir("benchmark_comparison")
+    out_dir = paths.run_eval_dir("benchmark_comparison")
 
     # JSON (latencies_ms는 용량 절약을 위해 제외)
     json_data = {}

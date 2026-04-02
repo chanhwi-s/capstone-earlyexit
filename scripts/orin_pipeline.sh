@@ -9,15 +9,15 @@
 #            cap6@202.30.10.85:capstone-earlyexit/experiments/
 #
 #  실행 순서:
-#    0. 최신 exp_* 디렉토리 자동 감지 (또는 EXP_DIR 직접 지정)
-#    1. EE  ONNX → TRT 엔진 빌드 (seg1/2/3, FP16)
-#    2. Plain ONNX → TRT 엔진 빌드 (FP16, 동적 배치 1~32)
-#    3. VEE ONNX → TRT 엔진 빌드 (vee_seg1/vee_seg2, FP16)
-#    4. 기존 벤치마크 (Plain vs EE 3-seg)
-#    5. 4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) + profiling_utils 지표
-#    6. Hybrid runtime grid search (batch_size × timeout)
-#    7. TRT threshold sweep (EE + VEE)
-#    8. 엔진 레이어 fusion 분석
+#    0.   최신 exp_* 디렉토리 자동 감지 (또는 EXP_DIR 직접 지정)
+#    1.   EE  ONNX → TRT 엔진 빌드 (seg1/2/3, FP16)          ┐ SKIP_BUILD=1
+#    2.   Plain ONNX → TRT 엔진 빌드 (FP16, 동적 배치 1~32)  │ 이면 모두
+#    3.   VEE ONNX → TRT 엔진 빌드 (vee_seg1/vee_seg2, FP16) │ 스킵
+#    3.5. 엔진 레이어 fusion 분석 → exp_.../engine_inspect/   ┘
+#    ---  RUN_TIMESTAMP 설정 (이후 결과는 eval/run_YYYYMMDD_HHMMSS/ 에 격리)
+#    4.   Hybrid runtime grid search (batch_size × timeout)
+#    5.   4-Way 비교 벤치마크 (Plain / EE / VEE / Hybrid) + profiling_utils 지표
+#    6.   TRT threshold sweep (EE + VEE)
 #
 #  NOTE: analyze_hard_samples.py 는 PyTorch 체크포인트가 필요하므로
 #        5090 서버에서 별도 실행:
@@ -148,11 +148,24 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     done
     echo "[3/7] VEE 엔진 빌드 완료"
 
+    # ── 3.5 엔진 레이어 fusion 분석 (빌드 직후, SKIP_BUILD=1 이면 스킵) ──────
+    echo ""
+    echo "[3.5/7] TRT 레이어 fusion 분석 (Plain / EE / VEE)..."
+    cd "$SRC_DIR"
+    python analysis/inspect_engines.py
+    echo "[3.5/7] 분석 완료  →  $EXP_DIR/engine_inspect/"
+    cd "$PROJECT_ROOT"
+
 else
-    echo "[1-3/7] TRT 빌드 전체 스킵 (SKIP_BUILD=1)"
+    echo "[1-3/7] TRT 빌드 + engine_inspect 전체 스킵 (SKIP_BUILD=1)"
 fi
 
 cd "$SRC_DIR"
+
+# ── 실행별 타임스탬프 설정 (step 4~6 결과를 덮어쓰기 방지) ──────────────────
+export RUN_TIMESTAMP="run_$(date +%Y%m%d_%H%M%S)"
+echo ""
+echo "  📁 이번 실행 결과 디렉토리: eval/$RUN_TIMESTAMP/"
 
 # ── 4. Hybrid runtime grid search ────────────────────────────
 echo ""
@@ -196,21 +209,18 @@ python infer/infer_trt.py \
     --eval-cifar10 --sweep --sweep-vee --num-samples "$N_SAMPLES"
 echo "[7/8] Sweep 완료"
 
-# ── 8. 엔진 레이어 fusion 분석 ───────────────────────────────
-echo ""
-echo "[7/7] TRT 레이어 fusion 분석 (Plain / EE / VEE)..."
-python analysis/inspect_engines.py
-echo "[7/7] 분석 완료"
-
 echo ""
 echo "================================================"
-echo "  Orin 파이프라인 완료! (8단계)"
+echo "  Orin 파이프라인 완료!"
 echo "  실험 디렉토리 : $EXP_NAME"
 echo "  결과 위치:"
-echo "    $EXP_DIR/eval/benchmark_comparison/"
-echo "    $EXP_DIR/eval/hybrid_grid/"
-echo "    $EXP_DIR/eval/trt_sweep/"
-echo "    $EXP_DIR/eval/engine_inspect/"
+echo "    (런별 벤치마크)  $EXP_DIR/eval/$RUN_TIMESTAMP/"
+echo "      ├── benchmark_comparison/"
+echo "      ├── hybrid_grid/"
+echo "      └── trt_sweep/"
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+echo "    (엔진 분석)     $EXP_DIR/engine_inspect/"
+fi
 echo ""
 echo "  NOTE: Hard sample 분석은 5090에서 별도 실행"
 echo "    cd src && python analysis/analyze_hard_samples.py --threshold $THRESHOLD"

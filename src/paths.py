@@ -22,14 +22,18 @@
       │   ├── ee_resnet18/   (seg1.engine, seg2.engine, seg3.engine)
       │   ├── plain_resnet18/ (plain_resnet18.engine)
       │   └── vee_resnet18/  (vee_seg1.engine, vee_seg2.engine)
+      ├── engine_inspect/           ← 엔진이 동일하면 불변 → eval 밖에 저장
+      │   ├── Plain_ResNet-18.json
+      │   ├── EE_Seg1_....json
+      │   └── ...
       └── eval/
-          ├── exit_rate/
-          ├── trt_sweep/
+          ├── exit_rate/            ← eval_dir() — 모델 기반, 런 타임스탬프 불필요
           ├── exit_samples/
-          ├── benchmark/
-          ├── benchmark_comparison/
-          ├── hybrid_grid/
-          └── engine_inspect/
+          ├── hard_sample_analysis/
+          └── run_YYYYMMDD_HHMMSS/  ← run_eval_dir() — 실행마다 독립된 결과
+              ├── benchmark_comparison/
+              ├── hybrid_grid/
+              └── trt_sweep/
 
 ━━━ EXP_DIR 결정 우선순위 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -37,10 +41,24 @@
      (train_pipeline.sh / orin_pipeline.sh 에서 export)
   2. 없으면 experiments/ 내 가장 최신 exp_* 디렉토리 자동 선택
   3. exp_* 디렉토리가 아예 없으면 experiments/ 직접 사용 (하위 호환 fallback)
+
+━━━ RUN_TIMESTAMP 결정 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  run_eval_dir() 는 RUN_TIMESTAMP 환경변수를 사용해 실행별 하위 디렉토리 생성.
+  orin_pipeline.sh 에서 export RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S) 로 설정됨.
+  환경변수 없으면 모듈 임포트 시점의 시간을 자동 사용 (스크립트 직접 실행 시).
 """
 
 import os
 from datetime import datetime
+
+# ── 실행 타임스탬프 (run_eval_dir 용) ──────────────────────────────────────────
+# orin_pipeline.sh 에서 export RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S) 로 주입.
+# 환경변수 없으면 모듈 임포트 시점의 시간을 사용 (스크립트 단독 실행 시 fallback).
+RUN_TIMESTAMP: str = (
+    os.environ.get("RUN_TIMESTAMP", "").strip()
+    or datetime.now().strftime("run_%Y%m%d_%H%M%S")
+)
 
 # ── 루트 경로 ──────────────────────────────────────────────────────────────────
 PROJECT_ROOT   = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -127,10 +145,36 @@ def engine_path(model_name: str, filename: str) -> str:
 def eval_dir(eval_type: str) -> str:
     """{EXP_DIR}/eval/{eval_type}/ 생성 및 반환.
 
-    eval_type 예: 'exit_rate', 'trt_sweep', 'exit_samples',
-                  'benchmark', 'benchmark_comparison', 'hybrid_grid', 'engine_inspect'
+    모델 종속 결과(exit_rate, exit_samples, hard_sample_analysis 등)에 사용.
+    런마다 달라지지 않으므로 타임스탬프 없음.
     """
     d = os.path.join(EXPERIMENTS_DIR, "eval", eval_type)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def run_eval_dir(eval_type: str) -> str:
+    """{EXP_DIR}/eval/{RUN_TIMESTAMP}/{eval_type}/ 생성 및 반환.
+
+    실행마다 달라지는 벤치마크 결과에 사용 (덮어쓰기 방지).
+      eval_type 예: 'benchmark_comparison', 'hybrid_grid', 'trt_sweep'
+
+    RUN_TIMESTAMP 는 모듈 임포트 시 결정됨:
+      - 환경변수 RUN_TIMESTAMP 가 있으면 그 값 사용
+      - 없으면 모듈 임포트 시점 시간 자동 사용
+    """
+    d = os.path.join(EXPERIMENTS_DIR, "eval", RUN_TIMESTAMP, eval_type)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def engine_inspect_dir() -> str:
+    """{EXP_DIR}/engine_inspect/ 생성 및 반환.
+
+    TRT 엔진 레이어 fusion 분석 결과 저장.
+    엔진이 동일하면 결과가 변하지 않으므로 eval/ 밖에 독립 디렉토리로 저장.
+    """
+    d = os.path.join(EXPERIMENTS_DIR, "engine_inspect")
     os.makedirs(d, exist_ok=True)
     return d
 

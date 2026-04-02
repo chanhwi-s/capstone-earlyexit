@@ -145,7 +145,7 @@ def inspect_engine(label: str, path: str):
         print(f"     → 아래 raw JSON으로 직접 확인하세요")
 
     # ── Raw JSON 전체 파일 저장 ────────────────────────────────
-    out_dir  = paths.eval_dir("engine_inspect")
+    out_dir  = paths.engine_inspect_dir()
     safe_label = label.replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_')
     json_path  = os.path.abspath(os.path.join(out_dir, f"{safe_label}.json"))
 

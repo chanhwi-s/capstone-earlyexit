@@ -414,7 +414,7 @@ def main():
     print_best_summary(grid_results)
 
     # 저장
-    out_dir = paths.eval_dir("hybrid_grid")
+    out_dir = paths.run_eval_dir("hybrid_grid")
 
     # JSON 저장
     json_data = {}

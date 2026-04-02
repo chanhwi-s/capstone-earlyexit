@@ -432,7 +432,7 @@ def main():
                         help='VEE threshold 0.50~0.95 sweep')
     args = parser.parse_args()
 
-    out_dir    = paths.eval_dir("trt_sweep")
+    out_dir    = paths.run_eval_dir("trt_sweep")
     thresholds = np.arange(0.50, 1.00, 0.05)
 
     # ── EE 3-segment sweep ────────────────────────────────────────────────────
