@@ -2,8 +2,10 @@
 Plain ResNet-18 ONNX Export
 
 사용법:
-  python export_onnx_plain.py --ckpt experiments_plain/.../best.pth
-  python export_onnx_plain.py  (자동으로 최근 best.pth 선택)
+  python export_onnx_plain.py                               # CIFAR-10 (기본값)
+  python export_onnx_plain.py --dataset imagenet            # ImageNet (num_classes=1000, input 224×224)
+  python export_onnx_plain.py --ckpt experiments/.../best.pth --dataset imagenet
+  python export_onnx_plain.py --input-size 224 224          # 입력 크기 직접 지정
 """
 
 import os
@@ -21,9 +23,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=str, default=None,
                         help="체크포인트 경로. 미지정 시 자동 선택")
-    parser.add_argument("--input-size", type=int, nargs=2, default=[32, 32],
+    parser.add_argument("--dataset", type=str, default=None,
+                        choices=["cifar10", "imagenet"],
+                        help="데이터셋 (cifar10→10 classes / imagenet→1000 classes). "
+                             "미지정 시 configs/train.yaml 참조")
+    parser.add_argument("--input-size", type=int, nargs=2, default=None,
                         metavar=("H", "W"),
-                        help="입력 크기 (default: 32 32 for CIFAR-10)")
+                        help="입력 크기 (기본: cifar10→32 32, imagenet→224 224)")
     args = parser.parse_args()
 
     # ── 체크포인트 자동 선택 ──
@@ -38,17 +44,25 @@ def main():
         print(f"[ERROR] 파일 없음: {args.ckpt}")
         sys.exit(1)
 
-    # ── 모델 로드 ──
-    cfg         = load_config("configs/train.yaml")
-    num_classes = 10 if cfg["dataset"]["name"].lower() == "cifar10" else 1000
+    # ── dataset / num_classes / input_size 결정 ──
+    cfg = load_config("configs/train.yaml")
+    # --dataset 인자 > train.yaml 순으로 결정
+    dataset_name = (args.dataset or cfg["dataset"]["name"]).lower()
+    num_classes  = 1000 if dataset_name == "imagenet" else 10
+    # input_size: 명시적 지정 > dataset 기본값
+    if args.input_size is not None:
+        H, W = args.input_size
+    elif dataset_name == "imagenet":
+        H, W = 224, 224
+    else:
+        H, W = 32, 32
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model  = build_model(num_classes=num_classes)
     model.load_state_dict(torch.load(args.ckpt, map_location=device))
     model.to(device).eval()
-    print(f"모델 로드: {args.ckpt}  (num_classes={num_classes})")
+    print(f"모델 로드: {args.ckpt}  (dataset={dataset_name}, num_classes={num_classes})")
 
-    H, W        = args.input_size
     dummy_input = torch.randn(1, 3, H, W, device=device)
     print(f"더미 입력: (1, 3, {H}, {W})\n")
 

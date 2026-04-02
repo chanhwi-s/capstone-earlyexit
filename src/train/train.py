@@ -3,10 +3,20 @@ Early-Exit ResNet-18 학습 스크립트
 
 사용법:
   cd src
-  python train.py
+  python train/train.py                          # CIFAR-10 (기본값)
+  python train/train.py --dataset imagenet       # ImageNet (프리셋 자동 적용)
+  python train/train.py --dataset imagenet --epochs 60 --batch-size 128   # 개별 오버라이드
+
+주요 인자:
+  --dataset     cifar10 | imagenet  (기본: cifar10)
+  --data-root   데이터 루트 경로     (기본: configs/train.yaml 값)
+  --epochs      학습 에포크 수       (기본: dataset별 프리셋)
+  --batch-size  배치 크기            (기본: dataset별 프리셋)
+  --lr          초기 learning rate   (기본: dataset별 프리셋)
+  --seed        랜덤 시드
 
 결과 저장 위치:
-  experiments/train/ee_resnet18/run_YYYYMMDD_HHMMSS/
+  experiments/exp_.../train/ee_resnet18/
     checkpoints/  best.pth  final.pth  epoch_N.pth
     config.yaml
     train_log.csv
@@ -15,11 +25,12 @@ Early-Exit ResNet-18 학습 스크립트
 import os
 import sys
 import shutil
+import argparse
 import torch
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch.nn as nn
 import torch.optim as optim
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.ee_resnet18 import build_model
 from datasets.dataloader import get_dataloader
@@ -28,29 +39,46 @@ from utils import load_config, set_seed, log_to_csv
 import paths
 
 
-# ── config 로드 ──────────────────────────────────────────────────────────────
-config_path = "configs/train.yaml"
-cfg = load_config(config_path)
+# ── config 로드 + dataset별 프리셋 병합 ──────────────────────────────────────
 
-dataset     = cfg["dataset"]["name"]
-data_root   = cfg["dataset"]["data_root"]
-num_workers = cfg["dataset"]["num_workers"]
+def build_config(args):
+    """
+    train.yaml 로드 후 dataset 프리셋 병합 → CLI 인자로 최종 오버라이드.
+    우선순위: CLI 인자 > dataset 프리셋 > train.yaml 기본값
+    """
+    cfg = load_config("configs/train.yaml")
 
-batch_size = cfg["train"]["batch_size"]
-epochs     = cfg["train"]["epochs"]
-seed       = cfg["train"]["seed"]
-weights    = (cfg["train"]["w1"], cfg["train"]["w2"], cfg["train"]["w3"])
+    # dataset 프리셋 병합 (imagenet 선택 시)
+    dataset = args.dataset.lower()
+    if dataset == "imagenet" and "imagenet" in cfg:
+        preset = cfg["imagenet"]
+        cfg["dataset"]["name"]        = "imagenet"
+        cfg["dataset"]["data_root"]   = preset.get("data_root",   cfg["dataset"]["data_root"])
+        cfg["dataset"]["num_workers"] = preset.get("num_workers", cfg["dataset"]["num_workers"])
+        cfg["train"].update(preset.get("train",     {}))
+        cfg["optimizer"].update(preset.get("optimizer", {}))
+        cfg["scheduler"].update(preset.get("scheduler", {}))
+    else:
+        cfg["dataset"]["name"] = "cifar10"
 
-lr           = float(cfg["optimizer"]["lr"])
-momentum     = float(cfg["optimizer"]["momentum"])
-weight_decay = float(cfg["optimizer"]["weight_decay"])
+    # CLI 인자 오버라이드 (지정된 항목만)
+    if args.data_root  is not None: cfg["dataset"]["data_root"]   = args.data_root
+    if args.epochs     is not None: cfg["train"]["epochs"]         = args.epochs
+    if args.batch_size is not None: cfg["train"]["batch_size"]     = args.batch_size
+    if args.lr         is not None: cfg["optimizer"]["lr"]         = args.lr
+    if args.seed       is not None: cfg["train"]["seed"]           = args.seed
+    if args.w1         is not None: cfg["train"]["w1"]             = args.w1
+    if args.w2         is not None: cfg["train"]["w2"]             = args.w2
+    if args.w3         is not None: cfg["train"]["w3"]             = args.w3
 
-T_max   = cfg["scheduler"]["T_max"]
-eta_min = float(cfg["scheduler"]["eta_min"])
+    # T_max를 epochs와 동기화 (scheduler가 cosine이면)
+    cfg["scheduler"]["T_max"] = cfg["train"]["epochs"]
+
+    return cfg
 
 
-def train():
-    set_seed(seed)
+def train(cfg):
+    set_seed(cfg["train"]["seed"])
 
     if torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -60,10 +88,28 @@ def train():
         device = torch.device("cpu")
     print(f"Device: {device}")
 
-    # ── 실험 디렉토리 (paths.py 중앙화) ──
+    dataset      = cfg["dataset"]["name"]
+    data_root    = cfg["dataset"]["data_root"]
+    num_workers  = cfg["dataset"]["num_workers"]
+    batch_size   = cfg["train"]["batch_size"]
+    epochs       = cfg["train"]["epochs"]
+    seed         = cfg["train"]["seed"]
+    weights      = (cfg["train"]["w1"], cfg["train"]["w2"], cfg["train"]["w3"])
+    lr           = float(cfg["optimizer"]["lr"])
+    momentum     = float(cfg["optimizer"]["momentum"])
+    weight_decay = float(cfg["optimizer"]["weight_decay"])
+    T_max        = cfg["scheduler"]["T_max"]
+    eta_min      = float(cfg["scheduler"]["eta_min"])
+
+    print(f"\n  Dataset    : {dataset}")
+    print(f"  Data root  : {data_root}")
+    print(f"  Batch size : {batch_size}  Epochs: {epochs}  LR: {lr}")
+    print(f"  Loss weights: w1={weights[0]}, w2={weights[1]}, w3={weights[2]}\n")
+
+    # ── 실험 디렉토리 ──
     exp_dir  = paths.new_train_dir("ee_resnet18")
     log_path = os.path.join(exp_dir, "train_log.csv")
-    shutil.copy(config_path, os.path.join(exp_dir, "config.yaml"))
+    shutil.copy("configs/train.yaml", os.path.join(exp_dir, "config.yaml"))
     print(f"Experiment dir : {exp_dir}")
     print(f"Log file       : {log_path}\n")
 
@@ -135,4 +181,27 @@ def train():
 
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser(description="EE ResNet-18 학습")
+    parser.add_argument("--dataset",    type=str, default="cifar10",
+                        choices=["cifar10", "imagenet"],
+                        help="학습 데이터셋 (기본: cifar10)")
+    parser.add_argument("--data-root",  type=str, default=None,
+                        help="데이터 루트 경로 (기본: configs/train.yaml 값)")
+    parser.add_argument("--epochs",     type=int,   default=None,
+                        help="학습 에포크 수 (기본: dataset 프리셋)")
+    parser.add_argument("--batch-size", type=int,   default=None,
+                        help="배치 크기 (기본: dataset 프리셋)")
+    parser.add_argument("--lr",         type=float, default=None,
+                        help="초기 learning rate (기본: dataset 프리셋)")
+    parser.add_argument("--seed",       type=int,   default=None,
+                        help="랜덤 시드")
+    parser.add_argument("--w1",         type=float, default=None,
+                        help="EE exit1 loss 가중치")
+    parser.add_argument("--w2",         type=float, default=None,
+                        help="EE exit2 loss 가중치")
+    parser.add_argument("--w3",         type=float, default=None,
+                        help="main loss 가중치")
+    args = parser.parse_args()
+
+    cfg = build_config(args)
+    train(cfg)

@@ -1,5 +1,5 @@
 dataset:
-  name: cifar10
+  name: cifar10          # train 스크립트에서 --dataset 인자로 덮어쓰기 가능
   data_root: ../data
   num_workers: 2
 
@@ -16,7 +16,7 @@ optimizer:
   momentum: 0.9
   weight_decay: 5e-4
 
-# CosineAnnealingLR: lr을 100 epoch에 걸쳐 0까지 cosine 곡선으로 감소
+# CosineAnnealingLR: lr을 epochs에 걸쳐 eta_min까지 cosine 곡선으로 감소
 scheduler:
   type: cosine
   T_max: 100      # epochs와 동일하게 설정
@@ -24,3 +24,25 @@ scheduler:
 
 model:
   name: ee_resnet18
+
+# ── ImageNet 전용 하이퍼파라미터 프리셋 ──────────────────────────────────────────
+# train 스크립트에서 --dataset imagenet 지정 시 아래 값으로 자동 병합됨
+# 각 값은 --epochs, --batch-size, --lr 등 CLI 인자로 개별 오버라이드 가능
+imagenet:
+  data_root: ../data    # ImageNet 데이터 경로 (data_root/imagenet/train, data_root/imagenet/val 구조)
+  num_workers: 8
+  input_size: [224, 224]
+  train:
+    batch_size: 256
+    epochs: 90
+    seed: 42
+    w1: 0.3
+    w2: 0.3
+    w3: 1.0
+  optimizer:
+    lr: 0.1
+    momentum: 0.9
+    weight_decay: 1.0e-4  # CIFAR-10(5e-4)보다 낮게: ImageNet은 더 큰 모델/데이터
+  scheduler:
+    T_max: 90
+    eta_min: 1.0e-4
