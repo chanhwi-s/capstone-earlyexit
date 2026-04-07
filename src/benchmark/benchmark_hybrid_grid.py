@@ -129,11 +129,14 @@ def bench_hybrid_once(vee_seg1, plain_engine, images, labels,
     exit1_rate = run['exit1_count']    / n * 100
     fb_rate    = run['fallback_count'] / n * 100
     stats      = compute_latency_stats(lats)
+    # 배치 처리를 반영한 실제 throughput: N / 전체 wall-clock 시간
+    real_throughput_fps = n / (run['total_wall_ms'] / 1000)
 
     return {
-        'accuracy':     correct / n,
-        'exit1_rate':   exit1_rate,
-        'fallback_rate': fb_rate,
+        'accuracy':             correct / n,
+        'exit1_rate':           exit1_rate,
+        'fallback_rate':        fb_rate,
+        'real_throughput_fps':  round(real_throughput_fps, 2),
         **{k: round(v, 4) if isinstance(v, float) else v for k, v in stats.items()},
     }
 
@@ -157,11 +160,13 @@ def bench_hybrid_vee_once(vee_seg1, vee_seg2, images, labels,
     exit1_rate = run['exit1_count']    / n * 100
     fb_rate    = run['fallback_count'] / n * 100
     stats      = compute_latency_stats(lats)
+    real_throughput_fps = n / (run['total_wall_ms'] / 1000)
 
     return {
-        'accuracy':     correct / n,
-        'exit1_rate':   exit1_rate,
-        'fallback_rate': fb_rate,
+        'accuracy':             correct / n,
+        'exit1_rate':           exit1_rate,
+        'fallback_rate':        fb_rate,
+        'real_throughput_fps':  round(real_throughput_fps, 2),
         **{k: round(v, 4) if isinstance(v, float) else v for k, v in stats.items()},
     }
 

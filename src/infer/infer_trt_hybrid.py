@@ -193,6 +193,7 @@ class HybridOrchestrator:
             fallback_queue.clear()
 
         # ── 스트리밍 루프 ──
+        t_stream_start = time.perf_counter()
         for i in range(n):
             img   = images_list[i]
             label = labels_list[i]
@@ -241,6 +242,7 @@ class HybridOrchestrator:
 
         # 잔여 queue flush
         _flush_fallback()
+        total_wall_ms = (time.perf_counter() - t_stream_start) * 1000
 
         return {
             'results':          results,
@@ -248,6 +250,7 @@ class HybridOrchestrator:
             'exit1_count':      exit1_count,
             'fallback_count':   fallback_count,
             'fallback_batches': fallback_batches,
+            'total_wall_ms':    total_wall_ms,
         }
 
 
@@ -325,6 +328,7 @@ class HybridVEEOrchestrator:
             fallback_queue.clear()
 
         # ── 스트리밍 루프 ──
+        t_stream_start = time.perf_counter()
         for i in range(n):
             img = images_list[i]
 
@@ -362,6 +366,7 @@ class HybridVEEOrchestrator:
                     queue_start_time = None
 
         _flush_fallback()
+        total_wall_ms = (time.perf_counter() - t_stream_start) * 1000
 
         return {
             'results':          results,
@@ -369,6 +374,7 @@ class HybridVEEOrchestrator:
             'exit1_count':      exit1_count,
             'fallback_count':   fallback_count,
             'fallback_batches': fallback_batches,
+            'total_wall_ms':    total_wall_ms,
         }
 
 

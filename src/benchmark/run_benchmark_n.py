@@ -124,21 +124,126 @@ def load_test_data(dataset: str, num_samples: int, data_root=None):
     return images, labels
 
 
+# ── Tegrastats 전력/GPU 모니터 ────────────────────────────────────────────────
+
+class TegrastatsMonitor:
+    """
+    tegrastats를 백그라운드로 실행하며 전력/GPU 이용률을 수집.
+
+    tegrastats 출력 예 (JetPack 6.x):
+      ... GR3D_FREQ 99% ... VDD_IN 14098mW VDD_CPU_GPU_CV 4943mW VDD_SOC 1893mW
+    """
+
+    def __init__(self, interval_ms: int = 100):
+        self.interval_ms = interval_ms
+        self._proc    = None
+        self._thread  = None
+        self._samples: list[dict] = []
+        self._running = False
+
+    def start(self):
+        self._samples.clear()
+        self._running = True
+        try:
+            self._proc = subprocess.Popen(
+                ['tegrastats', '--interval', str(self.interval_ms)],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, bufsize=1,
+            )
+            self._thread = threading.Thread(target=self._reader, daemon=True)
+            self._thread.start()
+        except FileNotFoundError:
+            # tegrastats 없는 환경(개발 PC)에서는 조용히 비활성화
+            self._running = False
+
+    def stop(self):
+        self._running = False
+        if self._proc:
+            self._proc.terminate()
+            self._proc.wait(timeout=2)
+            self._proc = None
+        if self._thread:
+            self._thread.join(timeout=2)
+            self._thread = None
+
+    def _reader(self):
+        for line in self._proc.stdout:
+            if not self._running:
+                break
+            s = self._parse(line)
+            if s:
+                self._samples.append(s)
+
+    @staticmethod
+    def _parse(line: str) -> dict | None:
+        """tegrastats 한 줄을 파싱하여 전력/GPU 이용률 dict 반환."""
+        d = {}
+        # GR3D_FREQ (GPU 이용률)
+        m = re.search(r'GR3D_FREQ\s+(\d+)%', line)
+        if m:
+            d['gpu_util_pct'] = int(m.group(1))
+        # VDD_IN (전체 보드 전력)
+        m = re.search(r'VDD_IN\s+(\d+)mW', line)
+        if m:
+            d['vdd_in_mw'] = int(m.group(1))
+        # VDD_CPU_GPU_CV
+        m = re.search(r'VDD_CPU_GPU_CV\s+(\d+)mW', line)
+        if m:
+            d['vdd_cpu_gpu_mw'] = int(m.group(1))
+        # VDD_SOC
+        m = re.search(r'VDD_SOC\s+(\d+)mW', line)
+        if m:
+            d['vdd_soc_mw'] = int(m.group(1))
+        return d if d else None
+
+    def get_stats(self, total_wall_ms: float, n_samples: int) -> dict:
+        """수집된 샘플로부터 평균 전력, energy/inference, GPU utilization 계산."""
+        if not self._samples:
+            return {
+                'power_available':      False,
+                'avg_vdd_in_mw':        None,
+                'avg_gpu_util_pct':     None,
+                'energy_per_inf_mj':    None,
+            }
+        vdd_in  = [s['vdd_in_mw']    for s in self._samples if 'vdd_in_mw'    in s]
+        gpu_util = [s['gpu_util_pct'] for s in self._samples if 'gpu_util_pct' in s]
+        avg_vdd_in  = float(np.mean(vdd_in))   if vdd_in   else None
+        avg_gpu_util = float(np.mean(gpu_util)) if gpu_util else None
+        # energy/inference (mJ) = 평균전력(mW) × 총시간(ms) / 1000 / N
+        energy_per_inf_mj = (avg_vdd_in * total_wall_ms / 1000 / n_samples
+                             if avg_vdd_in and total_wall_ms > 0 and n_samples > 0
+                             else None)
+        return {
+            'power_available':      True,
+            'avg_vdd_in_mw':        round(avg_vdd_in,    2) if avg_vdd_in    is not None else None,
+            'avg_gpu_util_pct':     round(avg_gpu_util,  2) if avg_gpu_util  is not None else None,
+            'energy_per_inf_mj':    round(energy_per_inf_mj, 4) if energy_per_inf_mj is not None else None,
+        }
+
+
 # ── 벤치마크 함수들 ───────────────────────────────────────────────────────────
 
-def bench_plain(engine, images, labels):
+def bench_plain(engine, images, labels, monitor: TegrastatsMonitor = None):
     correct, latencies = 0, []
+    if monitor: monitor.start()
+    t_wall = time.perf_counter()
     for img, lbl in zip(images, labels):
         t0  = time.perf_counter()
         out = engine.infer(img)
         latencies.append((time.perf_counter() - t0) * 1000)
         if list(out.values())[0].argmax(dim=1).item() == lbl:
             correct += 1
-    return correct / len(labels), latencies
+    total_wall_ms = (time.perf_counter() - t_wall) * 1000
+    if monitor: monitor.stop()
+    throughput_fps = len(labels) / (total_wall_ms / 1000)
+    power_stats = monitor.get_stats(total_wall_ms, len(labels)) if monitor else {}
+    return correct / len(labels), latencies, throughput_fps, power_stats
 
 
-def bench_ee(seg1, seg2, seg3, images, labels, threshold):
+def bench_ee(seg1, seg2, seg3, images, labels, threshold, monitor: TegrastatsMonitor = None):
     correct, latencies, exit_counts = 0, [], [0, 0, 0]
+    if monitor: monitor.start()
+    t_wall = time.perf_counter()
     for img, lbl in zip(images, labels):
         t0 = time.perf_counter()
         out1       = seg1.infer(img)
@@ -160,11 +265,17 @@ def bench_ee(seg1, seg2, seg3, images, labels, threshold):
         latencies.append((time.perf_counter() - t0) * 1000)
         if pred == lbl: correct += 1
     n = len(labels)
-    return correct / n, latencies, [c / n * 100 for c in exit_counts]
+    total_wall_ms = (time.perf_counter() - t_wall) * 1000
+    if monitor: monitor.stop()
+    throughput_fps = n / (total_wall_ms / 1000)
+    power_stats = monitor.get_stats(total_wall_ms, n) if monitor else {}
+    return correct / n, latencies, [c / n * 100 for c in exit_counts], throughput_fps, power_stats
 
 
-def bench_vee(seg1, seg2, images, labels, threshold):
+def bench_vee(seg1, seg2, images, labels, threshold, monitor: TegrastatsMonitor = None):
     correct, latencies, exit_counts = 0, [], [0, 0]
+    if monitor: monitor.start()
+    t_wall = time.perf_counter()
     for img, lbl in zip(images, labels):
         t0  = time.perf_counter()
         out1       = seg1.infer(img)
@@ -179,37 +290,50 @@ def bench_vee(seg1, seg2, images, labels, threshold):
         latencies.append((time.perf_counter() - t0) * 1000)
         if pred == lbl: correct += 1
     n = len(labels)
-    return correct / n, latencies, [c / n * 100 for c in exit_counts]
+    total_wall_ms = (time.perf_counter() - t_wall) * 1000
+    if monitor: monitor.stop()
+    throughput_fps = n / (total_wall_ms / 1000)
+    power_stats = monitor.get_stats(total_wall_ms, n) if monitor else {}
+    return correct / n, latencies, [c / n * 100 for c in exit_counts], throughput_fps, power_stats
 
 
 def bench_hybrid(vee_seg1, plain_engine, images, labels,
-                 threshold, batch_size, timeout_ms):
+                 threshold, batch_size, timeout_ms, monitor: TegrastatsMonitor = None):
     from infer.infer_trt_hybrid import HybridOrchestrator
     orch = HybridOrchestrator(vee_seg1, plain_engine,
                               batch_size=batch_size, timeout_ms=timeout_ms)
+    if monitor: monitor.start()
     run  = orch.run_stream(images, labels, threshold)
+    if monitor: monitor.stop()
     n    = len(labels)
     correct = sum(
         1 for i in range(n)
         if run['results'][i] is not None and run['results'][i]['pred'] == labels[i]
     )
     exits = [run['exit1_count'] / n * 100, run['fallback_count'] / n * 100]
-    return correct / n, run['latencies_ms'], exits
+    # total_wall_ms = 전체 스트림의 실제 경과 시간 → 올바른 throughput 계산 기준
+    throughput_fps = n / (run['total_wall_ms'] / 1000)
+    power_stats = monitor.get_stats(run['total_wall_ms'], n) if monitor else {}
+    return correct / n, run['latencies_ms'], exits, throughput_fps, power_stats
 
 
 def bench_hybrid_vee(vee_seg1, vee_seg2, images, labels,
-                     threshold, batch_size, timeout_ms):
+                     threshold, batch_size, timeout_ms, monitor: TegrastatsMonitor = None):
     from infer.infer_trt_hybrid import HybridVEEOrchestrator
     orch = HybridVEEOrchestrator(vee_seg1, vee_seg2,
                                  batch_size=batch_size, timeout_ms=timeout_ms)
+    if monitor: monitor.start()
     run  = orch.run_stream(images, labels, threshold)
+    if monitor: monitor.stop()
     n    = len(labels)
     correct = sum(
         1 for i in range(n)
         if run['results'][i] is not None and run['results'][i]['pred'] == labels[i]
     )
     exits = [run['exit1_count'] / n * 100, run['fallback_count'] / n * 100]
-    return correct / n, run['latencies_ms'], exits
+    throughput_fps = n / (run['total_wall_ms'] / 1000)
+    power_stats = monitor.get_stats(run['total_wall_ms'], n) if monitor else {}
+    return correct / n, run['latencies_ms'], exits, throughput_fps, power_stats
 
 
 # ── Grid Search (단일 실행) ───────────────────────────────────────────────────
@@ -300,11 +424,16 @@ def save_benchmark_csv(all_runs: list, out_path: str):
     for run_idx, run_data in enumerate(all_runs):
         for model, data in run_data.items():
             stats = compute_latency_stats(data['latencies_ms'])
+            pwr = data.get('power', {})
             rows.append({
-                'run_idx':    run_idx,
-                'model':      model,
-                'accuracy':   round(data['accuracy'], 6),
-                'exit_info':  str(data.get('exit_info', 'N/A')),
+                'run_idx':           run_idx,
+                'model':             model,
+                'accuracy':          round(data['accuracy'], 6),
+                'throughput_fps':    round(data.get('throughput_fps', 0.0), 2),
+                'avg_vdd_in_mw':     pwr.get('avg_vdd_in_mw'),
+                'avg_gpu_util_pct':  pwr.get('avg_gpu_util_pct'),
+                'energy_per_inf_mj': pwr.get('energy_per_inf_mj'),
+                'exit_info':         str(data.get('exit_info', 'N/A')),
                 **{k: round(v, 4) if isinstance(v, float) else v
                    for k, v in stats.items()},
             })
@@ -457,20 +586,26 @@ def plot_grid_best_heatmap(all_grid_runs: list, save_path: str):
 # ── Plot ──────────────────────────────────────────────────────────────────────
 
 def _collect_model_data(all_runs: list) -> dict:
-    """모델별 latency/accuracy 집계."""
+    """모델별 latency/accuracy/throughput 집계."""
     model_data = defaultdict(lambda: {
-        'latencies': [], 'accuracy': [],
+        'latencies': [], 'accuracy': [], 'throughputs': [],
         'avgs': [], 'p90s': [], 'p95s': [], 'p99s': [],
+        'vdd_in': [], 'gpu_util': [], 'energy_per_inf': [],
     })
     for run in all_runs:
         for model, data in run.items():
             lats = np.array(data['latencies_ms'])
             model_data[model]['latencies'].extend(data['latencies_ms'])
             model_data[model]['accuracy'].append(data['accuracy'])
+            model_data[model]['throughputs'].append(data.get('throughput_fps', 0.0))
             model_data[model]['avgs'].append(float(np.mean(lats)))
             model_data[model]['p90s'].append(float(np.percentile(lats, 90)))
             model_data[model]['p95s'].append(float(np.percentile(lats, 95)))
             model_data[model]['p99s'].append(float(np.percentile(lats, 99)))
+            pwr = data.get('power', {})
+            if pwr.get('avg_vdd_in_mw')    is not None: model_data[model]['vdd_in'].append(pwr['avg_vdd_in_mw'])
+            if pwr.get('avg_gpu_util_pct') is not None: model_data[model]['gpu_util'].append(pwr['avg_gpu_util_pct'])
+            if pwr.get('energy_per_inf_mj') is not None: model_data[model]['energy_per_inf'].append(pwr['energy_per_inf_mj'])
     return model_data
 
 
@@ -489,11 +624,12 @@ def plot_benchmark_results(all_runs: list, threshold: float, save_path: str):
     model_data = _collect_model_data(all_runs)
 
     n_models = len(models)
-    fig, axes = plt.subplots(2, max(3, n_models), figsize=(5 * max(3, n_models), 10))
-    fig.suptitle(f'4-Way Benchmark  (threshold={threshold}, N={n_runs}회)', fontsize=13)
+    n_cols = max(4, n_models)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5 * n_cols, 10))
+    fig.suptitle(f'6-Way Benchmark  (threshold={threshold}, N={n_runs}회)', fontsize=13)
 
     x = np.arange(n_models)
-    col_colors = [colors[i % 4] for i in range(n_models)]
+    col_colors = [colors[i % len(colors)] for i in range(n_models)]
 
     # ── Row 1-1: Avg latency error bar ──────────────────────────────────────
     ax = axes[0][0]
@@ -523,14 +659,25 @@ def plot_benchmark_results(all_runs: list, threshold: float, save_path: str):
     for (key, label, hatch), off in zip(pct_keys, offsets):
         vals = [np.mean(model_data[m][key]) for m in models]
         stds = [np.std(model_data[m][key])  for m in models]
-        bars = ax.bar(x + off, vals, width, label=label,
-                      color=col_colors, alpha=0.75, yerr=stds, capsize=3, hatch=hatch)
+        ax.bar(x + off, vals, width, label=label,
+               color=col_colors, alpha=0.75, yerr=stds, capsize=3, hatch=hatch)
     ax.set_xticks(x); ax.set_xticklabels(models, fontsize=9)
     ax.set_ylabel('Latency (ms)'); ax.set_title('P90 / P95 / P99  mean ± std')
     ax.legend(fontsize=8); ax.grid(alpha=0.3, axis='y')
 
-    # 4번째 이상 칸은 빈 칸 처리
-    for col_idx in range(3, max(3, n_models)):
+    # ── Row 1-4: Throughput (fps) ────────────────────────────────────────────
+    ax = axes[0][3]
+    thr_means = [np.mean(model_data[m]['throughputs']) for m in models]
+    thr_stds  = [np.std(model_data[m]['throughputs'])  for m in models]
+    ax.bar(x, thr_means, 0.5, color=col_colors, alpha=0.8, yerr=thr_stds, capsize=5)
+    for xi, (v, s) in enumerate(zip(thr_means, thr_stds)):
+        ax.text(xi, v + s + 0.5, f'{v:.1f}', ha='center', va='bottom', fontsize=8)
+    ax.set_xticks(x); ax.set_xticklabels(models, fontsize=9)
+    ax.set_ylabel('Throughput (fps)'); ax.set_title('Throughput  mean ± std\n(N / wall-clock time)')
+    ax.grid(alpha=0.3, axis='y')
+
+    # 5번째 이상 칸 처리
+    for col_idx in range(4, n_cols):
         axes[0][col_idx].axis('off')
 
     # ── Row 2: 모델별 개별 KDE ──────────────────────────────────────────────
@@ -599,11 +746,13 @@ def plot_kde_overlay_large(all_runs: list, threshold: float, save_path: str):
         p90  = np.mean(model_data[model]['p90s'])
         p95  = np.mean(model_data[model]['p95s'])
         p99  = np.mean(model_data[model]['p99s'])
+        thr  = np.mean(model_data[model]['throughputs'])
         try:
             kde    = gaussian_kde(lats_c, bw_method='scott')
             x_range = np.linspace(0, global_max_clip, 500)
             label  = (f'{model}  '
-                      f'avg={avg:.1f}  P90={p90:.1f}  P95={p95:.1f}  P99={p99:.1f} ms')
+                      f'avg={avg:.1f}  P90={p90:.1f}  P95={p95:.1f}  P99={p99:.1f} ms  '
+                      f'thr={thr:.1f} fps')
             ax.fill_between(x_range, kde(x_range), alpha=0.2, color=color)
             ax.plot(x_range, kde(x_range), color=color, linewidth=2.5, label=label)
         except Exception:
@@ -733,55 +882,58 @@ def main():
             all_grid_vee_runs.append(({}, best_bs_vee, best_to_vee))
             print(f'  [Grid Skip — VEE] fallback: bs={best_bs_vee}, to={best_to_vee}ms')
 
+        mon = TegrastatsMonitor(interval_ms=100)
+
         # 2) Plain
         if engines.get('plain'):
-            acc, lats = bench_plain(engines['plain'], images_bench, labels_bench)
-            run_results['Plain'] = {'accuracy': acc, 'latencies_ms': lats, 'exit_info': 'N/A'}
+            acc, lats, thr, pwr = bench_plain(engines['plain'], images_bench, labels_bench, mon)
+            run_results['Plain'] = {'accuracy': acc, 'latencies_ms': lats,
+                                    'throughput_fps': thr, 'power': pwr, 'exit_info': 'N/A'}
 
         # 3) EE
         if all(engines.get(k) for k in ['seg1', 'seg2', 'seg3']):
-            acc, lats, exits = bench_ee(
+            acc, lats, exits, thr, pwr = bench_ee(
                 engines['seg1'], engines['seg2'], engines['seg3'],
-                images_bench, labels_bench, args.threshold,
+                images_bench, labels_bench, args.threshold, mon,
             )
             run_results['EE-3Seg'] = {
-                'accuracy': acc, 'latencies_ms': lats,
+                'accuracy': acc, 'latencies_ms': lats, 'throughput_fps': thr, 'power': pwr,
                 'exit_info': f'EE1={exits[0]:.1f}% EE2={exits[1]:.1f}% Main={exits[2]:.1f}%',
             }
 
         # 4) VEE
         if all(engines.get(k) for k in ['vee_seg1', 'vee_seg2']):
-            acc, lats, exits = bench_vee(
+            acc, lats, exits, thr, pwr = bench_vee(
                 engines['vee_seg1'], engines['vee_seg2'],
-                images_bench, labels_bench, args.threshold,
+                images_bench, labels_bench, args.threshold, mon,
             )
             run_results['VEE-2Seg'] = {
-                'accuracy': acc, 'latencies_ms': lats,
+                'accuracy': acc, 'latencies_ms': lats, 'throughput_fps': thr, 'power': pwr,
                 'exit_info': f'Exit1={exits[0]:.1f}% Main={exits[1]:.1f}%',
             }
 
         # 5) Hybrid-Plain
         if engines.get('vee_seg1') and engines.get('plain'):
-            acc, lats, exits = bench_hybrid(
+            acc, lats, exits, thr, pwr = bench_hybrid(
                 engines['vee_seg1'], engines['plain'],
                 images_bench, labels_bench, args.threshold,
-                batch_size=best_bs_plain, timeout_ms=best_to_plain,
+                batch_size=best_bs_plain, timeout_ms=best_to_plain, monitor=mon,
             )
             run_results['Hybrid-Plain'] = {
-                'accuracy': acc, 'latencies_ms': lats,
+                'accuracy': acc, 'latencies_ms': lats, 'throughput_fps': thr, 'power': pwr,
                 'exit_info': f'Exit1={exits[0]:.1f}% Fallback={exits[1]:.1f}% bs={best_bs_plain} to={best_to_plain}ms',
                 'hybrid_bs': best_bs_plain, 'hybrid_to_ms': best_to_plain,
             }
 
         # 6) Hybrid-VEE
         if all(engines.get(k) for k in ['vee_seg1', 'vee_seg2']):
-            acc, lats, exits = bench_hybrid_vee(
+            acc, lats, exits, thr, pwr = bench_hybrid_vee(
                 engines['vee_seg1'], engines['vee_seg2'],
                 images_bench, labels_bench, args.threshold,
-                batch_size=best_bs_vee, timeout_ms=best_to_vee,
+                batch_size=best_bs_vee, timeout_ms=best_to_vee, monitor=mon,
             )
             run_results['Hybrid-VEE'] = {
-                'accuracy': acc, 'latencies_ms': lats,
+                'accuracy': acc, 'latencies_ms': lats, 'throughput_fps': thr, 'power': pwr,
                 'exit_info': f'Exit1={exits[0]:.1f}% Fallback={exits[1]:.1f}% bs={best_bs_vee} to={best_to_vee}ms',
                 'hybrid_bs': best_bs_vee, 'hybrid_to_ms': best_to_vee,
             }
@@ -789,11 +941,18 @@ def main():
         # 요약 출력
         for model, data in run_results.items():
             lats_arr = np.array(data['latencies_ms'])
+            pwr = data.get('power', {})
+            pwr_str = (f'  pwr={pwr["avg_vdd_in_mw"]:.0f}mW  '
+                       f'gpu={pwr["avg_gpu_util_pct"]:.0f}%  '
+                       f'e/inf={pwr["energy_per_inf_mj"]:.2f}mJ'
+                       if pwr.get('power_available') else '')
             print(f'    {model:12s}  acc={data["accuracy"]:.4f}  '
                   f'avg={np.mean(lats_arr):.2f}  '
                   f'p90={np.percentile(lats_arr, 90):.2f}  '
                   f'p95={np.percentile(lats_arr, 95):.2f}  '
                   f'p99={np.percentile(lats_arr, 99):.2f} ms  '
+                  f'thr={data["throughput_fps"]:.1f} fps'
+                  f'{pwr_str}  '
                   f'{data["exit_info"]}')
 
         all_benchmark_runs.append(run_results)
@@ -869,21 +1028,68 @@ def main():
     )
 
     # 요약 통계 출력
-    print(f'\n{"=" * 60}')
-    print(f'  {args.n}회 실행 모델별 P99 요약  (threshold={args.threshold})')
-    print(f'  {"model":14s}  {"p99_mean":>10}  {"p99_std":>10}  {"acc_mean":>10}')
-    print(f'  {"-" * 52}')
+    print(f'\n{"=" * 80}')
+    print(f'  {args.n}회 실행 모델별 요약  (threshold={args.threshold})')
+    print(f'  {"model":14s}  {"avg_ms":>8}  {"p90_ms":>8}  {"p95_ms":>8}  {"p99_ms":>8}  {"thr_fps":>9}  {"acc":>7}')
+    print(f'  {"-" * 72}')
     if all_benchmark_runs:
         models = list(all_benchmark_runs[0].keys())
+        model_summary = {}
         for model in models:
-            p99s = [np.percentile(run[model]['latencies_ms'], 99)
+            lats_all = [lat for run in all_benchmark_runs if model in run
+                        for lat in run[model]['latencies_ms']]
+            thrs = [run[model]['throughput_fps']
                     for run in all_benchmark_runs if model in run]
             accs = [run[model]['accuracy']
                     for run in all_benchmark_runs if model in run]
+            model_summary[model] = {
+                'avg': np.mean(lats_all), 'p90': np.percentile(lats_all, 90),
+                'p95': np.percentile(lats_all, 95), 'p99': np.percentile(lats_all, 99),
+                'thr': np.mean(thrs), 'acc': np.mean(accs),
+            }
+            s = model_summary[model]
             print(f'  {model:14s}  '
-                  f'{np.mean(p99s):>10.2f}ms  '
-                  f'{np.std(p99s):>10.2f}ms  '
-                  f'{np.mean(accs):>10.4f}')
+                  f'{s["avg"]:>8.2f}  {s["p90"]:>8.2f}  '
+                  f'{s["p95"]:>8.2f}  {s["p99"]:>8.2f}  '
+                  f'{s["thr"]:>9.1f}  {s["acc"]:>7.4f}')
+
+        # plain 대비 speedup 출력
+        if 'Plain' in model_summary:
+            print(f'\n  Plain 대비 speedup (배율 — 클수록 좋음):')
+            print(f'  {"model":14s}  {"avg_x":>7}  {"p90_x":>7}  {"p95_x":>7}  {"p99_x":>7}  {"thr_x":>7}')
+            print(f'  {"-" * 56}')
+            pb = model_summary['Plain']
+            for model in models:
+                if model == 'Plain':
+                    continue
+                s = model_summary[model]
+                print(f'  {model:14s}  '
+                      f'{pb["avg"]/s["avg"]:>7.2f}x  '
+                      f'{pb["p90"]/s["p90"]:>7.2f}x  '
+                      f'{pb["p95"]/s["p95"]:>7.2f}x  '
+                      f'{pb["p99"]/s["p99"]:>7.2f}x  '
+                      f'{s["thr"]/pb["thr"]:>7.2f}x')
+
+        # 전력 요약 출력
+        power_rows = [
+            (model, run[model].get('power', {}))
+            for run in all_benchmark_runs[:1]   # 첫 run에서 availability 확인
+            for model in run
+        ]
+        if any(p.get('power_available') for _, p in power_rows):
+            print(f'\n  전력 / Energy 요약  (N회 평균):')
+            print(f'  {"model":14s}  {"vdd_in_mw":>10}  {"gpu_util%":>10}  {"mJ/inf":>9}')
+            print(f'  {"-" * 52}')
+            for model in models:
+                pwr_list = [run[model].get('power', {})
+                            for run in all_benchmark_runs if model in run]
+                vdd_vals = [p['avg_vdd_in_mw']    for p in pwr_list if p.get('avg_vdd_in_mw')    is not None]
+                gpu_vals = [p['avg_gpu_util_pct']  for p in pwr_list if p.get('avg_gpu_util_pct') is not None]
+                eng_vals = [p['energy_per_inf_mj'] for p in pwr_list if p.get('energy_per_inf_mj') is not None]
+                vdd_str = f'{np.mean(vdd_vals):>10.0f}' if vdd_vals else f'{"N/A":>10}'
+                gpu_str = f'{np.mean(gpu_vals):>10.1f}' if gpu_vals else f'{"N/A":>10}'
+                eng_str = f'{np.mean(eng_vals):>9.3f}'  if eng_vals else f'{"N/A":>9}'
+                print(f'  {model:14s}  {vdd_str}  {gpu_str}  {eng_str}')
 
     # Grid best 조합 빈도 터미널 출력
     if all_grid_plain_runs:
