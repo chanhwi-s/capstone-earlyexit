@@ -251,6 +251,141 @@ class HybridOrchestrator:
         }
 
 
+# ── Hybrid VEE Orchestrator ──────────────────────────────────────────────────
+
+class HybridVEEOrchestrator:
+    """
+    VEE seg1 (first exit) + VEE seg2 (batched fallback) 하이브리드 런타임.
+
+    HybridOrchestrator와의 차이:
+      - fallback 시 원본 이미지를 plain에 재투입하지 않고,
+        seg1에서 이미 계산된 feat_layer1을 큐에 저장해뒀다가
+        vee_seg2에 배치로 투입 → 중복 연산 없음.
+
+    동작 방식:
+      - vee_seg1(img) → feat_layer1, ee1_logits
+      - conf >= threshold  → exit1 즉시 반환
+      - conf <  threshold  → fallback_queue에 (idx, feat_layer1) 추가
+      - queue가 batch_size 도달 OR timeout 경과 →
+        feat들을 concatenate → vee_seg2(batch_feats) → 유효 결과 추출
+    """
+
+    def __init__(self, vee_seg1: TRTEngine, vee_seg2: TRTEngine,
+                 batch_size: int = 8, timeout_ms: float = 10.0):
+        self.vee_seg1   = vee_seg1
+        self.vee_seg2   = vee_seg2
+        self.batch_size = batch_size
+        self.timeout_ms = timeout_ms
+
+    def run_stream(self, images_list: list, labels_list: list,
+                   threshold: float = 0.80):
+        """
+        Args / Returns: HybridOrchestrator.run_stream과 동일한 인터페이스.
+        """
+        n = len(images_list)
+        results          = [None] * n
+        latencies        = [0.0]  * n
+        exit1_count      = 0
+        fallback_count   = 0
+        fallback_batches = 0
+
+        # fallback queue: (sample_idx, feat_layer1 tensor)
+        fallback_queue   = []
+        queue_start_time = None
+
+        def _flush_fallback():
+            nonlocal fallback_batches
+            if not fallback_queue:
+                return
+
+            fallback_batches += 1
+            valid_count  = len(fallback_queue)
+            batch_feats  = []
+            batch_indices = []
+
+            for idx, feat in fallback_queue:
+                batch_feats.append(feat)
+                batch_indices.append(idx)
+
+            # zero-padding으로 batch_size 맞추기
+            if valid_count < self.batch_size:
+                pad = torch.zeros_like(batch_feats[0])
+                for _ in range(self.batch_size - valid_count):
+                    batch_feats.append(pad)
+
+            batch_tensor = torch.cat(batch_feats, dim=0)  # (B, C, H', W')
+
+            # vee_seg2 배치 추론
+            t_fb_start = time.perf_counter()
+            out = self.vee_seg2.infer({'feat_layer1': batch_tensor})
+            t_fb_end   = time.perf_counter()
+            fb_latency = (t_fb_end - t_fb_start) * 1000
+
+            logits_key = self.vee_seg2.output_names[0]
+            all_logits = out[logits_key]  # (B, num_classes)
+
+            for i, sample_idx in enumerate(batch_indices):
+                logits_i = all_logits[i:i+1]
+                conf_i   = F.softmax(logits_i, dim=1).max().item()
+                pred_i   = logits_i.argmax(dim=1).item()
+                results[sample_idx] = {
+                    'pred':     pred_i,
+                    'conf':     conf_i,
+                    'exit':     'fallback_vee',
+                    'fb_batch': valid_count,
+                }
+                latencies[sample_idx] += fb_latency
+
+            fallback_queue.clear()
+
+        # ── 스트리밍 루프 ──
+        for i in range(n):
+            img = images_list[i]
+
+            t_start = time.perf_counter()
+            out1    = self.vee_seg1.infer(img)
+
+            # feat_layer1, ee1_logits 추출
+            feat_key = [k for k in out1 if 'feat' in k.lower()]
+            ee1_key  = [k for k in out1 if 'ee1'  in k.lower() or 'logit' in k.lower()]
+            feat      = out1[feat_key[0]]  if feat_key else list(out1.values())[0]
+            ee1_logits = out1[ee1_key[0]] if ee1_key  else list(out1.values())[-1]
+
+            conf    = F.softmax(ee1_logits, dim=1).max().item()
+            t_seg1  = time.perf_counter()
+            seg1_ms = (t_seg1 - t_start) * 1000
+
+            if conf >= threshold:
+                pred = ee1_logits.argmax(dim=1).item()
+                results[i] = {'pred': pred, 'conf': conf, 'exit': 'exit1'}
+                latencies[i] = seg1_ms
+                exit1_count += 1
+            else:
+                latencies[i] = seg1_ms  # seg1 시간은 이미 소비
+
+                if not fallback_queue:
+                    queue_start_time = time.perf_counter()
+
+                fallback_queue.append((i, feat))
+                fallback_count += 1
+
+                elapsed = (time.perf_counter() - queue_start_time) * 1000
+                if (len(fallback_queue) >= self.batch_size or
+                        elapsed >= self.timeout_ms):
+                    _flush_fallback()
+                    queue_start_time = None
+
+        _flush_fallback()
+
+        return {
+            'results':          results,
+            'latencies_ms':     latencies,
+            'exit1_count':      exit1_count,
+            'fallback_count':   fallback_count,
+            'fallback_batches': fallback_batches,
+        }
+
+
 # ── CIFAR-10 평가 ─────────────────────────────────────────────────────────────
 
 def eval_cifar10_hybrid(orchestrator, threshold, num_samples):

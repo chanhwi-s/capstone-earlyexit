@@ -112,11 +112,39 @@ def load_test_data(num_samples):
 
 def bench_hybrid_once(vee_seg1, plain_engine, images, labels,
                       threshold, batch_size, timeout_ms):
-    """한 가지 (batch_size, timeout_ms) 조합에 대해 hybrid 벤치마크 실행."""
+    """한 가지 (batch_size, timeout_ms) 조합에 대해 Hybrid-Plain 벤치마크 실행."""
     from infer.infer_trt_hybrid import HybridOrchestrator
 
     orch = HybridOrchestrator(vee_seg1, plain_engine,
                               batch_size=batch_size, timeout_ms=timeout_ms)
+    run  = orch.run_stream(images, labels, threshold)
+
+    n = len(labels)
+    correct = sum(
+        1 for i in range(n)
+        if run['results'][i] is not None and
+        run['results'][i]['pred'] == labels[i]
+    )
+    lats       = run['latencies_ms']
+    exit1_rate = run['exit1_count']    / n * 100
+    fb_rate    = run['fallback_count'] / n * 100
+    stats      = compute_latency_stats(lats)
+
+    return {
+        'accuracy':     correct / n,
+        'exit1_rate':   exit1_rate,
+        'fallback_rate': fb_rate,
+        **{k: round(v, 4) if isinstance(v, float) else v for k, v in stats.items()},
+    }
+
+
+def bench_hybrid_vee_once(vee_seg1, vee_seg2, images, labels,
+                          threshold, batch_size, timeout_ms):
+    """한 가지 (batch_size, timeout_ms) 조합에 대해 Hybrid-VEE 벤치마크 실행."""
+    from infer.infer_trt_hybrid import HybridVEEOrchestrator
+
+    orch = HybridVEEOrchestrator(vee_seg1, vee_seg2,
+                                 batch_size=batch_size, timeout_ms=timeout_ms)
     run  = orch.run_stream(images, labels, threshold)
 
     n = len(labels)

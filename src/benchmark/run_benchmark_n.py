@@ -197,6 +197,21 @@ def bench_hybrid(vee_seg1, plain_engine, images, labels,
     return correct / n, run['latencies_ms'], exits
 
 
+def bench_hybrid_vee(vee_seg1, vee_seg2, images, labels,
+                     threshold, batch_size, timeout_ms):
+    from infer.infer_trt_hybrid import HybridVEEOrchestrator
+    orch = HybridVEEOrchestrator(vee_seg1, vee_seg2,
+                                 batch_size=batch_size, timeout_ms=timeout_ms)
+    run  = orch.run_stream(images, labels, threshold)
+    n    = len(labels)
+    correct = sum(
+        1 for i in range(n)
+        if run['results'][i] is not None and run['results'][i]['pred'] == labels[i]
+    )
+    exits = [run['exit1_count'] / n * 100, run['fallback_count'] / n * 100]
+    return correct / n, run['latencies_ms'], exits
+
+
 # ── Grid Search (단일 실행) ───────────────────────────────────────────────────
 
 def run_grid_once(vee_seg1, plain_engine, images_grid, labels_grid,
@@ -432,7 +447,7 @@ def plot_benchmark_results(all_runs: list, threshold: float, save_path: str):
         return
 
     models = list(all_runs[0].keys())
-    colors = ['steelblue', 'tomato', 'orange', 'mediumpurple']
+    colors = ['steelblue', 'tomato', 'orange', 'mediumpurple', 'seagreen', 'crimson']
     n_runs = len(all_runs)
     model_data = _collect_model_data(all_runs)
 
@@ -525,7 +540,7 @@ def plot_kde_overlay_large(all_runs: list, threshold: float, save_path: str):
         return
 
     models = list(all_runs[0].keys())
-    colors = ['steelblue', 'tomato', 'orange', 'mediumpurple']
+    colors = ['steelblue', 'tomato', 'orange', 'mediumpurple', 'seagreen', 'crimson']
     n_runs = len(all_runs)
     model_data = _collect_model_data(all_runs)
 
@@ -612,7 +627,7 @@ def main():
     vee_seg2 = args.vee_seg2 or paths.engine_path('vee_resnet18',   'vee_seg2.engine')
 
     print('=' * 60)
-    print(f'  4-Way Benchmark  ×  {args.n}회')
+    print(f'  6-Way Benchmark  ×  {args.n}회')
     print(f'  Threshold   : {args.threshold}')
     print(f'  Dataset     : {args.dataset}')
     print(f'  Samples     : {args.num_samples}  (grid: {args.grid_samples})')
@@ -691,14 +706,27 @@ def main():
                 'exit_info': f'Exit1={exits[0]:.1f}% Main={exits[1]:.1f}%',
             }
 
-        # 5) Hybrid
+        # 5) Hybrid-Plain
         if engines.get('vee_seg1') and engines.get('plain'):
             acc, lats, exits = bench_hybrid(
                 engines['vee_seg1'], engines['plain'],
                 images_bench, labels_bench, args.threshold,
                 batch_size=best_bs, timeout_ms=best_to,
             )
-            run_results['Hybrid'] = {
+            run_results['Hybrid-Plain'] = {
+                'accuracy': acc, 'latencies_ms': lats,
+                'exit_info': f'Exit1={exits[0]:.1f}% Fallback={exits[1]:.1f}%',
+                'hybrid_bs': best_bs, 'hybrid_to_ms': best_to,
+            }
+
+        # 6) Hybrid-VEE
+        if all(engines.get(k) for k in ['vee_seg1', 'vee_seg2']):
+            acc, lats, exits = bench_hybrid_vee(
+                engines['vee_seg1'], engines['vee_seg2'],
+                images_bench, labels_bench, args.threshold,
+                batch_size=best_bs, timeout_ms=best_to,
+            )
+            run_results['Hybrid-VEE'] = {
                 'accuracy': acc, 'latencies_ms': lats,
                 'exit_info': f'Exit1={exits[0]:.1f}% Fallback={exits[1]:.1f}%',
                 'hybrid_bs': best_bs, 'hybrid_to_ms': best_to,
