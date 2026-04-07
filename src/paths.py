@@ -109,12 +109,33 @@ def latest_train_dir(model_name: str) -> str | None:
 
 
 def latest_checkpoint(model_name: str, name: str = "best.pth") -> str | None:
-    """현재 실험의 checkpoint 경로 반환. 없으면 None."""
+    """현재 실험의 checkpoint 경로 반환. 없으면 None.
+
+    두 가지 구조를 모두 지원:
+      - {EXP_DIR}/train/{model_name}/checkpoints/{name}
+      - {EXP_DIR}/train/{model_name}/run_YYYYMMDD_HHMMSS/checkpoints/{name}  (최신 run_* 선택)
+    """
     run = latest_train_dir(model_name)
     if run is None:
         return None
+
+    # 1. 직접 경로
     ckpt = os.path.join(run, "checkpoints", name)
-    return ckpt if os.path.exists(ckpt) else None
+    if os.path.exists(ckpt):
+        return ckpt
+
+    # 2. run_* 서브디렉토리 탐색 → 가장 최신
+    if os.path.isdir(run):
+        run_dirs = sorted(
+            d for d in os.listdir(run)
+            if d.startswith("run_") and os.path.isdir(os.path.join(run, d))
+        )
+        for run_dir in reversed(run_dirs):
+            ckpt = os.path.join(run, run_dir, "checkpoints", name)
+            if os.path.exists(ckpt):
+                return ckpt
+
+    return None
 
 
 # ── ONNX 경로 ──────────────────────────────────────────────────────────────────
