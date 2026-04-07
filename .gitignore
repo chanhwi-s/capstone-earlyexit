@@ -36,6 +36,7 @@ dist/
 
 # Claude 작업 노트 (프로젝트 루트에 생성될 수 있음)
 CLAUDE.md
+notes/
 
 *.ppt
 *.pptx
