@@ -404,11 +404,29 @@ def plot_grid_best_heatmap(all_grid_runs: list, save_path: str):
 
 # ── Plot ──────────────────────────────────────────────────────────────────────
 
+def _collect_model_data(all_runs: list) -> dict:
+    """모델별 latency/accuracy 집계."""
+    model_data = defaultdict(lambda: {
+        'latencies': [], 'accuracy': [],
+        'avgs': [], 'p90s': [], 'p95s': [], 'p99s': [],
+    })
+    for run in all_runs:
+        for model, data in run.items():
+            lats = np.array(data['latencies_ms'])
+            model_data[model]['latencies'].extend(data['latencies_ms'])
+            model_data[model]['accuracy'].append(data['accuracy'])
+            model_data[model]['avgs'].append(float(np.mean(lats)))
+            model_data[model]['p90s'].append(float(np.percentile(lats, 90)))
+            model_data[model]['p95s'].append(float(np.percentile(lats, 95)))
+            model_data[model]['p99s'].append(float(np.percentile(lats, 99)))
+    return model_data
+
+
 def plot_benchmark_results(all_runs: list, threshold: float, save_path: str):
     """
-    모델별 latency error bar + distribution overlay.
-    Row 1: P99 error bar | Accuracy | Throughput
-    Row 2: Latency KDE overlay per model
+    모델별 latency error bar + 개별 KDE distribution.
+    Row 1: Avg latency bar | Accuracy | p90/p95/p99 grouped bar
+    Row 2: 4모델 개별 KDE (각 모델 1칸씩)
     """
     if not all_runs:
         return
@@ -416,105 +434,139 @@ def plot_benchmark_results(all_runs: list, threshold: float, save_path: str):
     models = list(all_runs[0].keys())
     colors = ['steelblue', 'tomato', 'orange', 'mediumpurple']
     n_runs = len(all_runs)
+    model_data = _collect_model_data(all_runs)
 
-    # 모델별 집계
-    model_data = defaultdict(lambda: {'latencies': [], 'accuracy': [], 'p99s': [], 'avgs': []})
-    for run in all_runs:
-        for model, data in run.items():
-            model_data[model]['latencies'].extend(data['latencies_ms'])
-            model_data[model]['accuracy'].append(data['accuracy'])
-            lats = np.array(data['latencies_ms'])
-            model_data[model]['p99s'].append(float(np.percentile(lats, 99)))
-            model_data[model]['avgs'].append(float(np.mean(lats)))
-
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    n_models = len(models)
+    fig, axes = plt.subplots(2, max(3, n_models), figsize=(5 * max(3, n_models), 10))
     fig.suptitle(f'4-Way Benchmark  (threshold={threshold}, N={n_runs}회)', fontsize=13)
 
-    # ── Row 1-1: P99 latency error bar ──────────────────────────────────────
+    x = np.arange(n_models)
+    col_colors = [colors[i % 4] for i in range(n_models)]
+
+    # ── Row 1-1: Avg latency error bar ──────────────────────────────────────
     ax = axes[0][0]
-    x = np.arange(len(models))
-    p99_means = [np.mean(model_data[m]['p99s']) for m in models]
-    p99_stds  = [np.std(model_data[m]['p99s'])  for m in models]
-    ax.bar(x, p99_means, 0.5, color=[colors[i % 4] for i in range(len(models))],
-           alpha=0.8, yerr=p99_stds, capsize=5)
-    for xi, (m, s) in enumerate(zip(p99_means, p99_stds)):
-        ax.text(xi, m + s + 0.1, f'{m:.2f}±{s:.2f}',
-                ha='center', va='bottom', fontsize=8)
-    ax.set_xticks(x)
-    ax.set_xticklabels(models, fontsize=9)
-    ax.set_ylabel('P99 Latency (ms)')
-    ax.set_title('P99 Latency  mean ± std')
+    avgs  = [np.mean(model_data[m]['avgs']) for m in models]
+    a_std = [np.std(model_data[m]['avgs'])  for m in models]
+    ax.bar(x, avgs, 0.5, color=col_colors, alpha=0.8, yerr=a_std, capsize=5)
+    for xi, (v, s) in enumerate(zip(avgs, a_std)):
+        ax.text(xi, v + s + 0.05, f'{v:.2f}', ha='center', va='bottom', fontsize=8)
+    ax.set_xticks(x); ax.set_xticklabels(models, fontsize=9)
+    ax.set_ylabel('Latency (ms)'); ax.set_title('Avg Latency  mean ± std')
     ax.grid(alpha=0.3, axis='y')
 
     # ── Row 1-2: Accuracy ───────────────────────────────────────────────────
     ax = axes[0][1]
     acc_means = [np.mean(model_data[m]['accuracy']) for m in models]
-    acc_stds  = [np.std(model_data[m]['accuracy'])  for m in models]
-    ax.bar(x, [a * 100 for a in acc_means],
-           0.5, color=[colors[i % 4] for i in range(len(models))], alpha=0.8)
-    ax.set_xticks(x)
-    ax.set_xticklabels(models, fontsize=9)
-    ax.set_ylabel('Accuracy (%)')
-    ax.set_title('Accuracy')
+    ax.bar(x, [a * 100 for a in acc_means], 0.5, color=col_colors, alpha=0.8)
+    ax.set_xticks(x); ax.set_xticklabels(models, fontsize=9)
+    ax.set_ylabel('Accuracy (%)'); ax.set_title('Accuracy')
     ax.set_ylim([max(0, min(a * 100 for a in acc_means) - 5), 100])
     ax.grid(alpha=0.3, axis='y')
 
-    # ── Row 1-3: avg latency error bar ──────────────────────────────────────
+    # ── Row 1-3: p90/p95/p99 grouped bar ────────────────────────────────────
     ax = axes[0][2]
-    avg_means = [np.mean(model_data[m]['avgs']) for m in models]
-    avg_stds  = [np.std(model_data[m]['avgs'])  for m in models]
-    ax.bar(x, avg_means, 0.5, color=[colors[i % 4] for i in range(len(models))],
-           alpha=0.8, yerr=avg_stds, capsize=5)
-    ax.set_xticks(x)
-    ax.set_xticklabels(models, fontsize=9)
-    ax.set_ylabel('Avg Latency (ms)')
-    ax.set_title('Avg Latency  mean ± std')
-    ax.grid(alpha=0.3, axis='y')
+    pct_keys = [('p90s', 'P90', '//'), ('p95s', 'P95', ''), ('p99s', 'P99', 'xx')]
+    width = 0.22
+    offsets = [-width, 0, width]
+    for (key, label, hatch), off in zip(pct_keys, offsets):
+        vals = [np.mean(model_data[m][key]) for m in models]
+        stds = [np.std(model_data[m][key])  for m in models]
+        bars = ax.bar(x + off, vals, width, label=label,
+                      color=col_colors, alpha=0.75, yerr=stds, capsize=3, hatch=hatch)
+    ax.set_xticks(x); ax.set_xticklabels(models, fontsize=9)
+    ax.set_ylabel('Latency (ms)'); ax.set_title('P90 / P95 / P99  mean ± std')
+    ax.legend(fontsize=8); ax.grid(alpha=0.3, axis='y')
 
-    # ── Row 2: KDE overlay per model ─────────────────────────────────────────
-    for col_idx, (model, color) in enumerate(zip(models[:3], colors)):
+    # 4번째 이상 칸은 빈 칸 처리
+    for col_idx in range(3, max(3, n_models)):
+        axes[0][col_idx].axis('off')
+
+    # ── Row 2: 모델별 개별 KDE ──────────────────────────────────────────────
+    for col_idx, (model, color) in enumerate(zip(models, colors)):
         ax = axes[1][col_idx]
         lats = np.array(model_data[model]['latencies'])
         clip = np.percentile(lats, 99.5)
-        lats_clipped = lats[lats <= clip]
+        lats_c = lats[lats <= clip]
         try:
-            kde = gaussian_kde(lats_clipped, bw_method='scott')
-            x_range = np.linspace(lats_clipped.min(), clip, 300)
-            ax.fill_between(x_range, kde(x_range), alpha=0.4, color=color)
-            ax.plot(x_range, kde(x_range), color=color, linewidth=2)
-            ax.axvline(np.median(lats), color='black', linestyle='--',
-                       linewidth=1, label=f'median={np.median(lats):.1f}ms')
-            ax.axvline(np.percentile(lats, 99), color='red', linestyle=':',
-                       linewidth=1, label=f'P99={np.percentile(lats, 99):.1f}ms')
+            kde = gaussian_kde(lats_c, bw_method='scott')
+            xr  = np.linspace(lats_c.min(), clip, 300)
+            ax.fill_between(xr, kde(xr), alpha=0.35, color=color)
+            ax.plot(xr, kde(xr), color=color, linewidth=2)
+            for pct, ls, lbl in [
+                (50,  '--', f'Median={np.median(lats):.1f}ms'),
+                (90,  ':',  f'P90={np.percentile(lats, 90):.1f}ms'),
+                (95,  '-.',  f'P95={np.percentile(lats, 95):.1f}ms'),
+                (99,  (0,(3,1)), f'P99={np.percentile(lats, 99):.1f}ms'),
+            ]:
+                ax.axvline(np.percentile(lats, pct), color='black' if pct == 50 else 'red',
+                           linestyle=ls, linewidth=1, alpha=0.8, label=lbl)
         except Exception:
-            ax.hist(lats_clipped, bins=40, color=color, alpha=0.6, density=True)
-        ax.set_title(f'{model} — Latency Distribution')
-        ax.set_xlabel('Latency (ms)')
-        ax.set_ylabel('Density')
-        ax.legend(fontsize=7)
-        ax.grid(alpha=0.3)
+            ax.hist(lats_c, bins=40, color=color, alpha=0.6, density=True)
+        ax.set_title(f'{model}')
+        ax.set_xlabel('Latency (ms)'); ax.set_ylabel('Density')
+        ax.legend(fontsize=6.5); ax.grid(alpha=0.3)
 
-    # 4번째 subplot: 모든 모델 KDE 비교
-    ax = axes[1][2] if len(models) <= 3 else axes[1][2]
-    for mi, (model, color) in enumerate(zip(models, colors)):
-        lats = np.array(model_data[model]['latencies'])
-        clip = np.percentile(lats, 99.5)
-        try:
-            kde = gaussian_kde(lats[lats <= clip], bw_method='scott')
-            x_range = np.linspace(0, clip, 300)
-            ax.plot(x_range, kde(x_range), color=color, linewidth=2, label=model)
-        except Exception:
-            pass
-    ax.set_title('All Models — KDE Overlay')
-    ax.set_xlabel('Latency (ms)')
-    ax.set_ylabel('Density')
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
+    # 남는 칸 숨기기
+    for col_idx in range(n_models, max(3, n_models)):
+        axes[1][col_idx].axis('off')
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'  Benchmark plot 저장: {save_path}')
+
+
+def plot_kde_overlay_large(all_runs: list, threshold: float, save_path: str):
+    """
+    4모델 KDE overlay — 단독 대형 그래프.
+    benchmark_kde_overlay.png 로 별도 저장.
+    """
+    if not all_runs:
+        return
+
+    models = list(all_runs[0].keys())
+    colors = ['steelblue', 'tomato', 'orange', 'mediumpurple']
+    n_runs = len(all_runs)
+    model_data = _collect_model_data(all_runs)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    fig.suptitle(
+        f'Latency Distribution — All Models  (threshold={threshold}, N={n_runs}회)',
+        fontsize=14
+    )
+
+    global_max_clip = 0.0
+    for model in models:
+        lats = np.array(model_data[model]['latencies'])
+        global_max_clip = max(global_max_clip, float(np.percentile(lats, 99.5)))
+
+    for model, color in zip(models, colors):
+        lats = np.array(model_data[model]['latencies'])
+        lats_c = lats[lats <= global_max_clip]
+        avg  = np.mean(model_data[model]['avgs'])
+        p90  = np.mean(model_data[model]['p90s'])
+        p95  = np.mean(model_data[model]['p95s'])
+        p99  = np.mean(model_data[model]['p99s'])
+        try:
+            kde    = gaussian_kde(lats_c, bw_method='scott')
+            x_range = np.linspace(0, global_max_clip, 500)
+            label  = (f'{model}  '
+                      f'avg={avg:.1f}  P90={p90:.1f}  P95={p95:.1f}  P99={p99:.1f} ms')
+            ax.fill_between(x_range, kde(x_range), alpha=0.2, color=color)
+            ax.plot(x_range, kde(x_range), color=color, linewidth=2.5, label=label)
+        except Exception:
+            pass
+
+    ax.set_xlabel('Latency (ms)', fontsize=12)
+    ax.set_ylabel('Density', fontsize=12)
+    ax.legend(fontsize=10, loc='upper right')
+    ax.grid(alpha=0.3)
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  KDE overlay 저장: {save_path}')
 
 
 # ── 메인 ─────────────────────────────────────────────────────────────────────
@@ -656,8 +708,10 @@ def main():
         for model, data in run_results.items():
             lats_arr = np.array(data['latencies_ms'])
             print(f'    {model:12s}  acc={data["accuracy"]:.4f}  '
-                  f'avg={np.mean(lats_arr):.2f}ms  '
-                  f'p99={np.percentile(lats_arr, 99):.2f}ms  '
+                  f'avg={np.mean(lats_arr):.2f}  '
+                  f'p90={np.percentile(lats_arr, 90):.2f}  '
+                  f'p95={np.percentile(lats_arr, 95):.2f}  '
+                  f'p99={np.percentile(lats_arr, 99):.2f} ms  '
                   f'{data["exit_info"]}')
 
         all_benchmark_runs.append(run_results)
@@ -706,6 +760,10 @@ def main():
     plot_benchmark_results(
         all_benchmark_runs, args.threshold,
         os.path.join(out_dir, 'benchmark_comparison.png'),
+    )
+    plot_kde_overlay_large(
+        all_benchmark_runs, args.threshold,
+        os.path.join(out_dir, 'benchmark_kde_overlay.png'),
     )
     plot_grid_best_heatmap(
         all_grid_runs,
