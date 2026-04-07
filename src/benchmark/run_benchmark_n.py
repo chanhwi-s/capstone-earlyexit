@@ -241,10 +241,10 @@ def run_grid_once(vee_seg1, plain_engine, images_grid, labels_grid,
             except Exception as e:
                 grid[(bs, to_ms)] = None
 
-    # 최적: p99 latency 최소
+    # 최적: p95 latency 최소
     valid = {k: v for k, v in grid.items() if v is not None}
     if valid:
-        best_key = min(valid, key=lambda k: valid[k].get('p99_ms', float('inf')))
+        best_key = min(valid, key=lambda k: valid[k].get('p95_ms', float('inf')))
         best_bs, best_to = best_key
     else:
         best_bs, best_to = batch_sizes[0], timeout_ms_list[0]
@@ -281,7 +281,7 @@ def run_grid_once_vee(vee_seg1, vee_seg2, images_grid, labels_grid,
 
     valid = {k: v for k, v in grid.items() if v is not None}
     if valid:
-        best_key = min(valid, key=lambda k: valid[k].get('p99_ms', float('inf')))
+        best_key = min(valid, key=lambda k: valid[k].get('p95_ms', float('inf')))
         best_bs, best_to = best_key
     else:
         best_bs, best_to = batch_sizes[0], timeout_ms_list[0]

@@ -381,11 +381,11 @@ def print_best_summary(grid_results):
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 
 def get_best_params(grid_results) -> tuple[int, float] | None:
-    """P99 latency가 가장 낮은 (batch_size, timeout_ms) 반환."""
+    """P95 latency가 가장 낮은 (batch_size, timeout_ms) 반환."""
     valid = {k: v for k, v in grid_results.items() if v is not None}
     if not valid:
         return None
-    best_key = min(valid, key=lambda k: valid[k].get('p99_ms', float('inf')))
+    best_key = min(valid, key=lambda k: valid[k].get('p95_ms', float('inf')))
     return best_key   # (batch_size, timeout_ms)
 
 
