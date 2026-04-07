@@ -942,10 +942,15 @@ def main():
         for model, data in run_results.items():
             lats_arr = np.array(data['latencies_ms'])
             pwr = data.get('power', {})
-            pwr_str = (f'  pwr={pwr["avg_vdd_in_mw"]:.0f}mW  '
-                       f'gpu={pwr["avg_gpu_util_pct"]:.0f}%  '
-                       f'e/inf={pwr["energy_per_inf_mj"]:.2f}mJ'
-                       if pwr.get('power_available') else '')
+            if (pwr.get('power_available')
+                    and pwr.get('avg_vdd_in_mw') is not None
+                    and pwr.get('avg_gpu_util_pct') is not None
+                    and pwr.get('energy_per_inf_mj') is not None):
+                pwr_str = (f'  pwr={pwr["avg_vdd_in_mw"]:.0f}mW  '
+                           f'gpu={pwr["avg_gpu_util_pct"]:.0f}%  '
+                           f'e/inf={pwr["energy_per_inf_mj"]:.2f}mJ')
+            else:
+                pwr_str = ''
             print(f'    {model:12s}  acc={data["accuracy"]:.4f}  '
                   f'avg={np.mean(lats_arr):.2f}  '
                   f'p90={np.percentile(lats_arr, 90):.2f}  '
