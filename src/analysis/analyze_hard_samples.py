@@ -325,7 +325,8 @@ def main():
         print(f"Plain 자동 선택: {args.plain_ckpt}")
 
     # ── 설정 / 디바이스 ──
-    cfg = load_config('configs/train.yaml')
+    src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg = load_config(os.path.join(src_dir, 'configs/train.yaml'))
     num_classes = 10 if cfg['dataset']['name'].lower() == 'cifar10' else 1000
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
