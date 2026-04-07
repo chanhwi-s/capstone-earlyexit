@@ -299,38 +299,24 @@ class HybridVEEOrchestrator:
                 return
 
             fallback_batches += 1
-            valid_count  = len(fallback_queue)
-            batch_feats  = []
-            batch_indices = []
+            valid_count   = len(fallback_queue)
+            batch_feats   = [feat for _, feat in fallback_queue]
+            batch_indices = [idx  for idx, _ in fallback_queue]
 
-            for idx, feat in fallback_queue:
-                batch_feats.append(feat)
-                batch_indices.append(idx)
+            batch_tensor = torch.cat(batch_feats, dim=0)  # (N, 64, H', W')
 
-            # zero-padding으로 batch_size 맞추기
-            if valid_count < self.batch_size:
-                pad = torch.zeros_like(batch_feats[0])
-                for _ in range(self.batch_size - valid_count):
-                    batch_feats.append(pad)
-
-            batch_tensor = torch.cat(batch_feats, dim=0)  # (B, C, H', W')
-
-            # vee_seg2 배치 추론
             t_fb_start = time.perf_counter()
-            out = self.vee_seg2.infer({'feat_layer1': batch_tensor})
+            out        = self.vee_seg2.infer({'feat_layer1': batch_tensor})
             t_fb_end   = time.perf_counter()
             fb_latency = (t_fb_end - t_fb_start) * 1000
 
-            logits_key = self.vee_seg2.output_names[0]
-            all_logits = out[logits_key]  # (B, num_classes)
+            all_logits = out[self.vee_seg2.output_names[0]]  # (N, num_classes)
 
             for i, sample_idx in enumerate(batch_indices):
                 logits_i = all_logits[i:i+1]
-                conf_i   = F.softmax(logits_i, dim=1).max().item()
-                pred_i   = logits_i.argmax(dim=1).item()
                 results[sample_idx] = {
-                    'pred':     pred_i,
-                    'conf':     conf_i,
+                    'pred':     logits_i.argmax(dim=1).item(),
+                    'conf':     F.softmax(logits_i, dim=1).max().item(),
                     'exit':     'fallback_vee',
                     'fb_batch': valid_count,
                 }

@@ -133,22 +133,46 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     # ── 3. VEE TRT 엔진 빌드 ──
     echo ""
     echo "[3/7] VEE 세그먼트 엔진 빌드 (FP16)..."
-    declare -A VEE_ONNX_MAP=(
-        [vee_seg1]="vee_seg1_stem_layer1.onnx"
-        [vee_seg2]="vee_seg2_layer2to4.onnx"
-    )
-    for seg in vee_seg1 vee_seg2; do
-        onnx_path="$VEE_ONNX_DIR/${VEE_ONNX_MAP[$seg]}"
-        engine_path="$VEE_ENGINE_DIR/${seg}.engine"
-        if [[ ! -f "$onnx_path" ]]; then
-            echo "  [SKIP] $onnx_path 없음"
-            continue
-        fi
-        echo "  빌드: ${VEE_ONNX_MAP[$seg]} → ${seg}.engine"
-        trtexec --onnx="$onnx_path" --saveEngine="$engine_path" \
+
+    # 데이터셋별 입력/피처 크기 결정
+    # feat_layer1 shape = (B, 64, H/4, W/4)  — conv1(stride=2) + maxpool(stride=2)
+    DATASET="${DATASET:-cifar10}"
+    if [[ "$DATASET" == "imagenet" ]]; then
+        INPUT_H=224; INPUT_W=224
+    else
+        INPUT_H=32;  INPUT_W=32
+    fi
+    FEAT_H=$(( INPUT_H / 4 ))
+    FEAT_W=$(( INPUT_W / 4 ))
+
+    # vee_seg1: batch=1 고정 (스트리밍 single-sample 추론)
+    VEE_SEG1_ONNX="$VEE_ONNX_DIR/vee_seg1_stem_layer1.onnx"
+    if [[ -f "$VEE_SEG1_ONNX" ]]; then
+        echo "  빌드: vee_seg1_stem_layer1.onnx → vee_seg1.engine  (batch=1 고정)"
+        trtexec --onnx="$VEE_SEG1_ONNX" \
+                --saveEngine="$VEE_ENGINE_DIR/vee_seg1.engine" \
                 --fp16 --iterations=100 --warmUp=500 --avgRuns=100 \
                 2>&1 | tail -3
-    done
+    else
+        echo "  [SKIP] $VEE_SEG1_ONNX 없음"
+    fi
+
+    # vee_seg2: dynamic batch (Hybrid-VEE fallback 배치 처리용)
+    VEE_SEG2_ONNX="$VEE_ONNX_DIR/vee_seg2_layer2to4.onnx"
+    if [[ -f "$VEE_SEG2_ONNX" ]]; then
+        echo "  빌드: vee_seg2_layer2to4.onnx → vee_seg2.engine  (동적 배치 1~32, feat=${FEAT_H}x${FEAT_W})"
+        trtexec --onnx="$VEE_SEG2_ONNX" \
+                --saveEngine="$VEE_ENGINE_DIR/vee_seg2.engine" \
+                --fp16 \
+                --minShapes=feat_layer1:1x64x${FEAT_H}x${FEAT_W} \
+                --optShapes=feat_layer1:8x64x${FEAT_H}x${FEAT_W} \
+                --maxShapes=feat_layer1:32x64x${FEAT_H}x${FEAT_W} \
+                --iterations=100 --warmUp=500 --avgRuns=100 \
+                2>&1 | tail -3
+    else
+        echo "  [SKIP] $VEE_SEG2_ONNX 없음"
+    fi
+
     echo "[3/7] VEE 엔진 빌드 완료"
 
     # ── 3.5 엔진 레이어 fusion 분석 (빌드 직후, SKIP_BUILD=1 이면 스킵) ──────
