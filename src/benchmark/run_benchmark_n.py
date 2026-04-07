@@ -252,6 +252,43 @@ def run_grid_once(vee_seg1, plain_engine, images_grid, labels_grid,
     return grid, best_bs, best_to
 
 
+def run_grid_once_vee(vee_seg1, vee_seg2, images_grid, labels_grid,
+                      threshold, batch_sizes, timeout_ms_list):
+    """
+    Hybrid-VEE 전용 grid search.
+    run_grid_once과 동일 구조, bench_hybrid_vee_once 사용.
+    Returns: {(bs, to): result_dict}, best_bs, best_to
+    """
+    from benchmark.benchmark_hybrid_grid import bench_hybrid_vee_once
+
+    # warm-up
+    for to_ms in timeout_ms_list:
+        try:
+            bench_hybrid_vee_once(vee_seg1, vee_seg2, images_grid, labels_grid,
+                                  threshold, batch_sizes[0], to_ms)
+        except Exception:
+            pass
+
+    grid = {}
+    for bs in batch_sizes:
+        for to_ms in timeout_ms_list:
+            try:
+                r = bench_hybrid_vee_once(vee_seg1, vee_seg2, images_grid, labels_grid,
+                                          threshold, bs, to_ms)
+                grid[(bs, to_ms)] = r
+            except Exception:
+                grid[(bs, to_ms)] = None
+
+    valid = {k: v for k, v in grid.items() if v is not None}
+    if valid:
+        best_key = min(valid, key=lambda k: valid[k].get('p99_ms', float('inf')))
+        best_bs, best_to = best_key
+    else:
+        best_bs, best_to = batch_sizes[0], timeout_ms_list[0]
+
+    return grid, best_bs, best_to
+
+
 # ── CSV 저장 ──────────────────────────────────────────────────────────────────
 
 def save_benchmark_csv(all_runs: list, out_path: str):
@@ -653,8 +690,9 @@ def main():
     print(f'  로드 완료: benchmark={len(images_bench)}, grid={len(images_grid)}\n')
 
     # ── N회 반복 ─────────────────────────────────────────────────────────────
-    all_benchmark_runs = []   # list of {model: {accuracy, latencies_ms, exit_info}}
-    all_grid_runs      = []   # list of (grid_dict, best_bs, best_to)
+    all_benchmark_runs    = []   # list of {model: {accuracy, latencies_ms, exit_info}}
+    all_grid_plain_runs   = []   # list of (grid_dict, best_bs, best_to) — Hybrid-Plain
+    all_grid_vee_runs     = []   # list of (grid_dict, best_bs, best_to) — Hybrid-VEE
 
     for run_idx in range(args.n):
         print(f'\n{"─"*50}')
@@ -663,21 +701,37 @@ def main():
 
         run_results = {}
 
-        # 1) Grid Search
+        # 1-a) Grid Search — Hybrid-Plain
         if engines.get('vee_seg1') and engines.get('plain'):
-            print('  [Grid Search]')
-            grid, best_bs, best_to = run_grid_once(
+            print('  [Grid Search — Hybrid-Plain]')
+            grid_p, best_bs_plain, best_to_plain = run_grid_once(
                 engines['vee_seg1'], engines['plain'],
                 images_grid, labels_grid,
                 args.threshold, args.batch_sizes, args.timeout_ms,
             )
-            all_grid_runs.append((grid, best_bs, best_to))
-            print(f'  → 최적: bs={best_bs}, to={best_to}ms')
+            all_grid_plain_runs.append((grid_p, best_bs_plain, best_to_plain))
+            print(f'  → Plain 최적: bs={best_bs_plain}, to={best_to_plain}ms')
         else:
-            best_bs = args.batch_sizes[0]
-            best_to = args.timeout_ms[0]
-            all_grid_runs.append(({}, best_bs, best_to))
-            print(f'  [Grid Skip] fallback: bs={best_bs}, to={best_to}ms')
+            best_bs_plain = args.batch_sizes[0]
+            best_to_plain = args.timeout_ms[0]
+            all_grid_plain_runs.append(({}, best_bs_plain, best_to_plain))
+            print(f'  [Grid Skip — Plain] fallback: bs={best_bs_plain}, to={best_to_plain}ms')
+
+        # 1-b) Grid Search — Hybrid-VEE
+        if all(engines.get(k) for k in ['vee_seg1', 'vee_seg2']):
+            print('  [Grid Search — Hybrid-VEE]')
+            grid_v, best_bs_vee, best_to_vee = run_grid_once_vee(
+                engines['vee_seg1'], engines['vee_seg2'],
+                images_grid, labels_grid,
+                args.threshold, args.batch_sizes, args.timeout_ms,
+            )
+            all_grid_vee_runs.append((grid_v, best_bs_vee, best_to_vee))
+            print(f'  → VEE  최적: bs={best_bs_vee}, to={best_to_vee}ms')
+        else:
+            best_bs_vee = args.batch_sizes[0]
+            best_to_vee = args.timeout_ms[0]
+            all_grid_vee_runs.append(({}, best_bs_vee, best_to_vee))
+            print(f'  [Grid Skip — VEE] fallback: bs={best_bs_vee}, to={best_to_vee}ms')
 
         # 2) Plain
         if engines.get('plain'):
@@ -711,12 +765,12 @@ def main():
             acc, lats, exits = bench_hybrid(
                 engines['vee_seg1'], engines['plain'],
                 images_bench, labels_bench, args.threshold,
-                batch_size=best_bs, timeout_ms=best_to,
+                batch_size=best_bs_plain, timeout_ms=best_to_plain,
             )
             run_results['Hybrid-Plain'] = {
                 'accuracy': acc, 'latencies_ms': lats,
-                'exit_info': f'Exit1={exits[0]:.1f}% Fallback={exits[1]:.1f}%',
-                'hybrid_bs': best_bs, 'hybrid_to_ms': best_to,
+                'exit_info': f'Exit1={exits[0]:.1f}% Fallback={exits[1]:.1f}% bs={best_bs_plain} to={best_to_plain}ms',
+                'hybrid_bs': best_bs_plain, 'hybrid_to_ms': best_to_plain,
             }
 
         # 6) Hybrid-VEE
@@ -724,12 +778,12 @@ def main():
             acc, lats, exits = bench_hybrid_vee(
                 engines['vee_seg1'], engines['vee_seg2'],
                 images_bench, labels_bench, args.threshold,
-                batch_size=best_bs, timeout_ms=best_to,
+                batch_size=best_bs_vee, timeout_ms=best_to_vee,
             )
             run_results['Hybrid-VEE'] = {
                 'accuracy': acc, 'latencies_ms': lats,
-                'exit_info': f'Exit1={exits[0]:.1f}% Fallback={exits[1]:.1f}%',
-                'hybrid_bs': best_bs, 'hybrid_to_ms': best_to,
+                'exit_info': f'Exit1={exits[0]:.1f}% Fallback={exits[1]:.1f}% bs={best_bs_vee} to={best_to_vee}ms',
+                'hybrid_bs': best_bs_vee, 'hybrid_to_ms': best_to_vee,
             }
 
         # 요약 출력
@@ -753,38 +807,58 @@ def main():
         'timestamp': ts,
     }
 
-    # Grid JSON (latency 제외하여 가볍게)
-    grid_json = []
-    for run_idx, (grid, best_bs, best_to) in enumerate(all_grid_runs):
-        entry = {'run_idx': run_idx, 'best_bs': best_bs, 'best_to_ms': best_to, 'grid': {}}
-        for (bs, to), r in grid.items():
-            entry['grid'][f'bs={bs}_to={to}'] = (
-                {k: v for k, v in r.items() if k != 'latencies_ms'} if r else None
-            )
-        grid_json.append(entry)
-    with open(os.path.join(out_dir, 'grid_raw.json'), 'w') as f:
-        json.dump({'metadata': metadata, 'runs': grid_json}, f, indent=2)
-    print(f'  Grid JSON 저장: {out_dir}/grid_raw.json')
+    def _serialize_grid(grid_runs):
+        out = []
+        for run_idx, (grid, best_bs, best_to) in enumerate(grid_runs):
+            entry = {'run_idx': run_idx, 'best_bs': best_bs, 'best_to_ms': best_to, 'grid': {}}
+            for (bs, to), r in grid.items():
+                entry['grid'][f'bs={bs}_to={to}'] = (
+                    {k: v for k, v in r.items() if k != 'latencies_ms'} if r else None
+                )
+            out.append(entry)
+        return out
+
+    # Grid JSON — Hybrid-Plain
+    with open(os.path.join(out_dir, 'grid_plain_raw.json'), 'w') as f:
+        json.dump({'metadata': metadata, 'runs': _serialize_grid(all_grid_plain_runs)}, f, indent=2)
+    print(f'  Grid Plain JSON 저장: {out_dir}/grid_plain_raw.json')
+
+    # Grid JSON — Hybrid-VEE
+    with open(os.path.join(out_dir, 'grid_vee_raw.json'), 'w') as f:
+        json.dump({'metadata': metadata, 'runs': _serialize_grid(all_grid_vee_runs)}, f, indent=2)
+    print(f'  Grid VEE   JSON 저장: {out_dir}/grid_vee_raw.json')
 
     # Benchmark JSON (latencies_ms 포함)
     bench_json = []
     for run_idx, run_data in enumerate(all_benchmark_runs):
         entry = {'run_idx': run_idx, 'models': {}}
         for model, data in run_data.items():
-            entry['models'][model] = {
-                k: v for k, v in data.items()
-            }
+            entry['models'][model] = {k: v for k, v in data.items()}
         bench_json.append(entry)
     with open(os.path.join(out_dir, 'benchmark_raw.json'), 'w') as f:
         json.dump({'metadata': metadata, 'runs': bench_json}, f, indent=2)
     print(f'  Benchmark JSON 저장: {out_dir}/benchmark_raw.json')
 
-    # CSV
-    save_grid_csv(all_grid_runs, os.path.join(out_dir, 'grid_summary.csv'))
-    save_benchmark_csv(all_benchmark_runs, os.path.join(out_dir, 'benchmark_summary.csv'))
-    save_grid_best_csv(all_grid_runs, os.path.join(out_dir, 'grid_best_stats.csv'))
+    # CSV — Grid (분리)
+    save_grid_csv(all_grid_plain_runs, os.path.join(out_dir, 'grid_plain_summary.csv'))
+    save_grid_csv(all_grid_vee_runs,   os.path.join(out_dir, 'grid_vee_summary.csv'))
+    save_grid_best_csv(all_grid_plain_runs, os.path.join(out_dir, 'grid_plain_best_stats.csv'))
+    save_grid_best_csv(all_grid_vee_runs,   os.path.join(out_dir, 'grid_vee_best_stats.csv'))
 
-    # Plot
+    # CSV — Benchmark
+    save_benchmark_csv(all_benchmark_runs, os.path.join(out_dir, 'benchmark_summary.csv'))
+
+    # Plot — Grid heatmap (분리)
+    plot_grid_best_heatmap(
+        all_grid_plain_runs,
+        os.path.join(out_dir, 'grid_plain_best_heatmap.png'),
+    )
+    plot_grid_best_heatmap(
+        all_grid_vee_runs,
+        os.path.join(out_dir, 'grid_vee_best_heatmap.png'),
+    )
+
+    # Plot — Benchmark
     plot_benchmark_results(
         all_benchmark_runs, args.threshold,
         os.path.join(out_dir, 'benchmark_comparison.png'),
@@ -793,16 +867,12 @@ def main():
         all_benchmark_runs, args.threshold,
         os.path.join(out_dir, 'benchmark_kde_overlay.png'),
     )
-    plot_grid_best_heatmap(
-        all_grid_runs,
-        os.path.join(out_dir, 'grid_best_heatmap.png'),
-    )
 
     # 요약 통계 출력
     print(f'\n{"=" * 60}')
     print(f'  {args.n}회 실행 모델별 P99 요약  (threshold={args.threshold})')
-    print(f'  {"model":12s}  {"p99_mean":>10}  {"p99_std":>10}  {"acc_mean":>10}')
-    print(f'  {"-" * 50}')
+    print(f'  {"model":14s}  {"p99_mean":>10}  {"p99_std":>10}  {"acc_mean":>10}')
+    print(f'  {"-" * 52}')
     if all_benchmark_runs:
         models = list(all_benchmark_runs[0].keys())
         for model in models:
@@ -810,14 +880,18 @@ def main():
                     for run in all_benchmark_runs if model in run]
             accs = [run[model]['accuracy']
                     for run in all_benchmark_runs if model in run]
-            print(f'  {model:12s}  '
+            print(f'  {model:14s}  '
                   f'{np.mean(p99s):>10.2f}ms  '
                   f'{np.std(p99s):>10.2f}ms  '
                   f'{np.mean(accs):>10.4f}')
 
     # Grid best 조합 빈도 터미널 출력
-    if all_grid_runs:
-        print_grid_best_summary(all_grid_runs)
+    if all_grid_plain_runs:
+        print('\n  [Hybrid-Plain Grid Best]')
+        print_grid_best_summary(all_grid_plain_runs)
+    if all_grid_vee_runs:
+        print('\n  [Hybrid-VEE Grid Best]')
+        print_grid_best_summary(all_grid_vee_runs)
 
     print(f'\n  결과 저장: {out_dir}/')
     print(f'{"=" * 60}\n')
