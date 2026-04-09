@@ -37,8 +37,9 @@
 #    DATASET=cifar10     cifar10 | imagenet (기본 cifar10)
 #    THRESHOLDS="0.70 0.75 0.80 0.85 0.90"  탐색할 threshold 목록
 #    EXP_DIR=<path>      실험 디렉토리 (기본: 최신 exp_* 자동 감지)
-#    NO_EE=1             EE sweep 스킵
-#    NO_VEE=1            VEE sweep 스킵
+#    NO_EE=1             EE ResNet-18 sweep 스킵
+#    NO_VEE=1            VEE ResNet-18 sweep 스킵
+#    NO_EE50=1           EE ResNet-50 sweep 스킵
 # ============================================================
 
 set -euo pipefail
@@ -80,28 +81,41 @@ fi
 export EXP_NAME="$(basename "$EXP_DIR")"
 EE_ENGINE_DIR="$EXP_DIR/trt_engines/ee_resnet18"
 VEE_ENGINE_DIR="$EXP_DIR/trt_engines/vee_resnet18"
+EE50_ENGINE_DIR="$EXP_DIR/trt_engines/ee_resnet50"
 
 # ── 파라미터 ─────────────────────────────────────────────────
 N_SAMPLES="${N_SAMPLES:-1000}"
 DATASET="${DATASET:-cifar10}"
 
-# ── 엔진 파일 존재 확인 ──────────────────────────────────────
-for engine_file in \
-    "$EE_ENGINE_DIR/seg1.engine" \
-    "$EE_ENGINE_DIR/seg2.engine" \
-    "$EE_ENGINE_DIR/seg3.engine" \
-    "$VEE_ENGINE_DIR/vee_seg1.engine" \
-    "$VEE_ENGINE_DIR/vee_seg2.engine"
-do
-    if [[ ! -f "$engine_file" ]]; then
-        echo "[ERROR] 엔진 파일 없음: $engine_file"
-        echo "        먼저 TRT 빌드를 실행하세요: bash scripts/orin_pipeline.sh"
-        exit 1
-    fi
-done
+# ── 엔진 파일 존재 확인 (존재하는 것만 사용, 없으면 해당 sweep 스킵) ──────────
+# EE18 / VEE18 엔진이 없으면 자동으로 NO_EE/NO_VEE 설정
+if [[ ! -f "$EE_ENGINE_DIR/seg1.engine" || \
+      ! -f "$EE_ENGINE_DIR/seg2.engine" || \
+      ! -f "$EE_ENGINE_DIR/seg3.engine" ]]; then
+    echo "[WARN] EE ResNet-18 엔진 없음 → EE sweep 자동 스킵"
+    NO_EE=1
+fi
+if [[ ! -f "$VEE_ENGINE_DIR/vee_seg1.engine" || \
+      ! -f "$VEE_ENGINE_DIR/vee_seg2.engine" ]]; then
+    echo "[WARN] VEE ResNet-18 엔진 없음 → VEE sweep 자동 스킵"
+    NO_VEE=1
+fi
+if [[ ! -f "$EE50_ENGINE_DIR/ee50_seg1.engine" || \
+      ! -f "$EE50_ENGINE_DIR/ee50_seg2.engine" || \
+      ! -f "$EE50_ENGINE_DIR/ee50_seg3.engine" || \
+      ! -f "$EE50_ENGINE_DIR/ee50_seg4.engine" ]]; then
+    echo "[WARN] EE ResNet-50 엔진 없음 → EE50 sweep 자동 스킵"
+    NO_EE50=1
+fi
+
+# 모두 스킵이면 오류
+if [[ "${NO_EE:-0}" == "1" && "${NO_VEE:-0}" == "1" && "${NO_EE50:-0}" == "1" ]]; then
+    echo "[ERROR] 실행 가능한 엔진이 없습니다. orin_pipeline.sh 로 빌드 먼저 실행하세요."
+    exit 1
+fi
 
 echo "================================================"
-echo "  Step 1: EE + VEE Threshold Sweep"
+echo "  Step 1: EE18 + VEE18 + EE50 Threshold Sweep"
 echo "  반복 횟수  : $N"
 echo "  Samples    : $N_SAMPLES"
 echo "  Dataset    : $DATASET"
@@ -113,8 +127,9 @@ echo "================================================"
 # ── 추가 인자 조립 ────────────────────────────────────────────
 EXTRA_ARGS=""
 [[ -n "${THRESHOLDS:-}" ]] && EXTRA_ARGS="$EXTRA_ARGS --thresholds $THRESHOLDS"
-[[ "${NO_EE:-0}"  == "1" ]] && EXTRA_ARGS="$EXTRA_ARGS --no-ee"
-[[ "${NO_VEE:-0}" == "1" ]] && EXTRA_ARGS="$EXTRA_ARGS --no-vee"
+[[ "${NO_EE:-0}"   == "1" ]] && EXTRA_ARGS="$EXTRA_ARGS --no-ee"
+[[ "${NO_VEE:-0}"  == "1" ]] && EXTRA_ARGS="$EXTRA_ARGS --no-vee"
+[[ "${NO_EE50:-0}" == "1" ]] && EXTRA_ARGS="$EXTRA_ARGS --no-ee50"
 
 cd "$SRC_DIR"
 
@@ -128,6 +143,10 @@ python benchmark/run_sweep_n.py \
     --seg3         "$EE_ENGINE_DIR/seg3.engine" \
     --vee-seg1     "$VEE_ENGINE_DIR/vee_seg1.engine" \
     --vee-seg2     "$VEE_ENGINE_DIR/vee_seg2.engine" \
+    --ee50-seg1    "$EE50_ENGINE_DIR/ee50_seg1.engine" \
+    --ee50-seg2    "$EE50_ENGINE_DIR/ee50_seg2.engine" \
+    --ee50-seg3    "$EE50_ENGINE_DIR/ee50_seg3.engine" \
+    --ee50-seg4    "$EE50_ENGINE_DIR/ee50_seg4.engine" \
     $EXTRA_ARGS
 
 echo ""

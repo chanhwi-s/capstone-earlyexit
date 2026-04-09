@@ -73,21 +73,28 @@ export EXP_NAME="$(basename "$EXP_DIR")"
 EE_ONNX_DIR="$EXP_DIR/onnx/ee_resnet18"
 PLAIN_ONNX_DIR="$EXP_DIR/onnx/plain_resnet18"
 VEE_ONNX_DIR="$EXP_DIR/onnx/vee_resnet18"
+EE50_ONNX_DIR="$EXP_DIR/onnx/ee_resnet50"
+PLAIN50_ONNX_DIR="$EXP_DIR/onnx/plain_resnet50"
 
 EE_ENGINE_DIR="$EXP_DIR/trt_engines/ee_resnet18"
 PLAIN_ENGINE_DIR="$EXP_DIR/trt_engines/plain_resnet18"
 VEE_ENGINE_DIR="$EXP_DIR/trt_engines/vee_resnet18"
+EE50_ENGINE_DIR="$EXP_DIR/trt_engines/ee_resnet50"
+PLAIN50_ENGINE_DIR="$EXP_DIR/trt_engines/plain_resnet50"
 
 THRESHOLD="${THRESHOLD:-0.80}"
 N_SAMPLES="${N_SAMPLES:-1000}"
+DATASET="${DATASET:-cifar10}"
 
 echo "================================================"
 echo "  Orin TRT 빌드 파이프라인"
 echo "  Project root  : $PROJECT_ROOT"
 echo "  실험 디렉토리 : $EXP_NAME"
+echo "  Dataset       : $DATASET"
 echo "================================================"
 
-mkdir -p "$EE_ENGINE_DIR" "$PLAIN_ENGINE_DIR" "$VEE_ENGINE_DIR"
+mkdir -p "$EE_ENGINE_DIR" "$PLAIN_ENGINE_DIR" "$VEE_ENGINE_DIR" \
+         "$EE50_ENGINE_DIR" "$PLAIN50_ENGINE_DIR"
 
 # ── 1. EE TRT 엔진 빌드 ─────────────────────────────────────
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
@@ -136,7 +143,6 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
 
     # 데이터셋별 입력/피처 크기 결정
     # feat_layer1 shape = (B, 64, H/4, W/4)  — conv1(stride=2) + maxpool(stride=2)
-    DATASET="${DATASET:-cifar10}"
     if [[ "$DATASET" == "imagenet" ]]; then
         INPUT_H=224; INPUT_W=224
     else
@@ -175,6 +181,112 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
 
     echo "[3/7] VEE 엔진 빌드 완료"
 
+    # ── 4. Plain ResNet-50 TRT 엔진 빌드 ────────────────────────
+    echo ""
+    echo "[4/7] Plain ResNet-50 엔진 빌드 (FP16, 동적 배치 1~32)..."
+    PLAIN50_ONNX="$PLAIN50_ONNX_DIR/plain_resnet50.onnx"
+    if [[ -f "$PLAIN50_ONNX" ]]; then
+        if [[ "$DATASET" == "imagenet" ]]; then
+            trtexec --onnx="$PLAIN50_ONNX" \
+                    --saveEngine="$PLAIN50_ENGINE_DIR/plain_resnet50.engine" \
+                    --fp16 \
+                    --minShapes=input:1x3x224x224 \
+                    --optShapes=input:8x3x224x224 \
+                    --maxShapes=input:32x3x224x224 \
+                    --iterations=100 --warmUp=500 --avgRuns=100 \
+                    2>&1 | tail -3
+        else
+            trtexec --onnx="$PLAIN50_ONNX" \
+                    --saveEngine="$PLAIN50_ENGINE_DIR/plain_resnet50.engine" \
+                    --fp16 \
+                    --minShapes=input:1x3x32x32 \
+                    --optShapes=input:8x3x32x32 \
+                    --maxShapes=input:32x3x32x32 \
+                    --iterations=100 --warmUp=500 --avgRuns=100 \
+                    2>&1 | tail -3
+        fi
+        echo "[4/7] Plain ResNet-50 엔진 빌드 완료"
+    else
+        echo "[SKIP] $PLAIN50_ONNX 없음"
+    fi
+
+    # ── 5. EE ResNet-50 4-segment TRT 엔진 빌드 ─────────────────
+    # 피처 크기 (ResNet-50 기준):
+    #   feat_layer1: (B, 256,  H/4,  W/4 )  — stem stride=4
+    #   feat_layer2: (B, 512,  H/8,  W/8 )  — layer2 stride=2
+    #   feat_layer3: (B, 1024, H/16, W/16)  — layer3 stride=2
+    echo ""
+    echo "[5/7] EE ResNet-50 4-segment 엔진 빌드 (FP16, batch=1 고정)..."
+
+    EE50_FEAT1_H=$(( INPUT_H / 4  ))
+    EE50_FEAT1_W=$(( INPUT_W / 4  ))
+    EE50_FEAT2_H=$(( INPUT_H / 8  ))
+    EE50_FEAT2_W=$(( INPUT_W / 8  ))
+    EE50_FEAT3_H=$(( INPUT_H / 16 ))
+    EE50_FEAT3_W=$(( INPUT_W / 16 ))
+
+    # seg1: image → (feat_layer1, ee1_logits)
+    EE50_SEG1_ONNX="$EE50_ONNX_DIR/ee50_seg1_stem_layer1.onnx"
+    if [[ -f "$EE50_SEG1_ONNX" ]]; then
+        echo "  빌드: ee50_seg1_stem_layer1.onnx → ee50_seg1.engine"
+        trtexec --onnx="$EE50_SEG1_ONNX" \
+                --saveEngine="$EE50_ENGINE_DIR/ee50_seg1.engine" \
+                --fp16 --iterations=100 --warmUp=500 --avgRuns=100 \
+                2>&1 | tail -3
+    else
+        echo "  [SKIP] $EE50_SEG1_ONNX 없음"
+    fi
+
+    # seg2: feat_layer1 → (feat_layer2, ee2_logits)
+    EE50_SEG2_ONNX="$EE50_ONNX_DIR/ee50_seg2_layer2.onnx"
+    if [[ -f "$EE50_SEG2_ONNX" ]]; then
+        echo "  빌드: ee50_seg2_layer2.onnx → ee50_seg2.engine  (feat=${EE50_FEAT1_H}x${EE50_FEAT1_W})"
+        trtexec --onnx="$EE50_SEG2_ONNX" \
+                --saveEngine="$EE50_ENGINE_DIR/ee50_seg2.engine" \
+                --fp16 \
+                --minShapes=feat_layer1:1x256x${EE50_FEAT1_H}x${EE50_FEAT1_W} \
+                --optShapes=feat_layer1:1x256x${EE50_FEAT1_H}x${EE50_FEAT1_W} \
+                --maxShapes=feat_layer1:1x256x${EE50_FEAT1_H}x${EE50_FEAT1_W} \
+                --iterations=100 --warmUp=500 --avgRuns=100 \
+                2>&1 | tail -3
+    else
+        echo "  [SKIP] $EE50_SEG2_ONNX 없음"
+    fi
+
+    # seg3: feat_layer2 → (feat_layer3, ee3_logits)
+    EE50_SEG3_ONNX="$EE50_ONNX_DIR/ee50_seg3_layer3.onnx"
+    if [[ -f "$EE50_SEG3_ONNX" ]]; then
+        echo "  빌드: ee50_seg3_layer3.onnx → ee50_seg3.engine  (feat=${EE50_FEAT2_H}x${EE50_FEAT2_W})"
+        trtexec --onnx="$EE50_SEG3_ONNX" \
+                --saveEngine="$EE50_ENGINE_DIR/ee50_seg3.engine" \
+                --fp16 \
+                --minShapes=feat_layer2:1x512x${EE50_FEAT2_H}x${EE50_FEAT2_W} \
+                --optShapes=feat_layer2:1x512x${EE50_FEAT2_H}x${EE50_FEAT2_W} \
+                --maxShapes=feat_layer2:1x512x${EE50_FEAT2_H}x${EE50_FEAT2_W} \
+                --iterations=100 --warmUp=500 --avgRuns=100 \
+                2>&1 | tail -3
+    else
+        echo "  [SKIP] $EE50_SEG3_ONNX 없음"
+    fi
+
+    # seg4: feat_layer3 → main_logits
+    EE50_SEG4_ONNX="$EE50_ONNX_DIR/ee50_seg4_layer4.onnx"
+    if [[ -f "$EE50_SEG4_ONNX" ]]; then
+        echo "  빌드: ee50_seg4_layer4.onnx → ee50_seg4.engine  (feat=${EE50_FEAT3_H}x${EE50_FEAT3_W})"
+        trtexec --onnx="$EE50_SEG4_ONNX" \
+                --saveEngine="$EE50_ENGINE_DIR/ee50_seg4.engine" \
+                --fp16 \
+                --minShapes=feat_layer3:1x1024x${EE50_FEAT3_H}x${EE50_FEAT3_W} \
+                --optShapes=feat_layer3:1x1024x${EE50_FEAT3_H}x${EE50_FEAT3_W} \
+                --maxShapes=feat_layer3:1x1024x${EE50_FEAT3_H}x${EE50_FEAT3_W} \
+                --iterations=100 --warmUp=500 --avgRuns=100 \
+                2>&1 | tail -3
+    else
+        echo "  [SKIP] $EE50_SEG4_ONNX 없음"
+    fi
+
+    echo "[5/7] EE ResNet-50 엔진 빌드 완료"
+
     # ── 3.5 엔진 레이어 fusion 분석 (빌드 직후, SKIP_BUILD=1 이면 스킵) ──────
     echo ""
     echo "[3.5/7] TRT 레이어 fusion 분석 (Plain / EE / VEE)..."
@@ -184,7 +296,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     cd "$PROJECT_ROOT"
 
 else
-    echo "[1-3/7] TRT 빌드 + engine_inspect 전체 스킵 (SKIP_BUILD=1)"
+    echo "[1-5/7] TRT 빌드 + engine_inspect 전체 스킵 (SKIP_BUILD=1)"
 fi
 
 echo ""

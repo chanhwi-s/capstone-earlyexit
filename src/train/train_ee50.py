@@ -1,6 +1,6 @@
 """
 Early-Exit ResNet-50 학습 스크립트
-exit1(layer1 후), exit2(layer3 후), main(layer4 후) — 출력 3개
+exit1(layer1 후), exit2(layer2 후), exit3(layer3 후), main(layer4 후) — 출력 4개
 
 사용법:
   cd src
@@ -15,9 +15,10 @@ exit1(layer1 후), exit2(layer3 후), main(layer4 후) — 출력 3개
   --batch-size  배치 크기            (기본: dataset별 프리셋)
   --lr          초기 learning rate   (기본: dataset별 프리셋)
   --seed        랜덤 시드
-  --w1          exit1 loss 가중치    (기본: 0.3)
-  --w2          exit2 loss 가중치    (기본: 0.3)
-  --w3          main  loss 가중치    (기본: 1.0)
+  --w1          exit1 loss 가중치    (기본: 0.2)
+  --w2          exit2 loss 가중치    (기본: 0.2)
+  --w3          exit3 loss 가중치    (기본: 0.3)
+  --w4          main  loss 가중치    (기본: 1.0)
 
 결과 저장 위치:
   experiments/exp_.../train/ee_resnet50/
@@ -38,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.ee_resnet50 import build_model
 from datasets.dataloader import get_dataloader
-from engine.ee_trainer import train_one_epoch, evaluate
+from engine.ee50_trainer import train_one_epoch, evaluate
 from utils import load_config, set_seed, log_to_csv
 import paths
 
@@ -58,14 +59,19 @@ def build_config(args):
     else:
         cfg["dataset"]["name"] = "cifar10"
 
-    if args.data_root  is not None: cfg["dataset"]["data_root"]   = args.data_root
-    if args.epochs     is not None: cfg["train"]["epochs"]         = args.epochs
-    if args.batch_size is not None: cfg["train"]["batch_size"]     = args.batch_size
-    if args.lr         is not None: cfg["optimizer"]["lr"]         = args.lr
-    if args.seed       is not None: cfg["train"]["seed"]           = args.seed
-    if args.w1         is not None: cfg["train"]["w1"]             = args.w1
-    if args.w2         is not None: cfg["train"]["w2"]             = args.w2
-    if args.w3         is not None: cfg["train"]["w3"]             = args.w3
+    if args.data_root  is not None: cfg["dataset"]["data_root"] = args.data_root
+    if args.epochs     is not None: cfg["train"]["epochs"]      = args.epochs
+    if args.batch_size is not None: cfg["train"]["batch_size"]  = args.batch_size
+    if args.lr         is not None: cfg["optimizer"]["lr"]      = args.lr
+    if args.seed       is not None: cfg["train"]["seed"]        = args.seed
+    # ee50 전용 loss 가중치 (w1~w4)
+    if args.w1 is not None: cfg["train"]["w1"] = args.w1
+    if args.w2 is not None: cfg["train"]["w2"] = args.w2
+    if args.w3 is not None: cfg["train"]["w3"] = args.w3
+    if args.w4 is not None: cfg["train"]["w4"] = args.w4
+
+    # w4가 yaml에 없을 경우 기본값 설정
+    cfg["train"].setdefault("w4", 1.0)
 
     cfg["scheduler"]["T_max"] = cfg["train"]["epochs"]
     return cfg
@@ -83,7 +89,8 @@ def train(cfg):
     batch_size   = cfg["train"]["batch_size"]
     epochs       = cfg["train"]["epochs"]
     seed         = cfg["train"]["seed"]
-    weights      = (cfg["train"]["w1"], cfg["train"]["w2"], cfg["train"]["w3"])
+    weights      = (cfg["train"]["w1"], cfg["train"]["w2"],
+                    cfg["train"]["w3"], cfg["train"]["w4"])
     lr           = float(cfg["optimizer"]["lr"])
     momentum     = float(cfg["optimizer"]["momentum"])
     weight_decay = float(cfg["optimizer"]["weight_decay"])
@@ -93,7 +100,7 @@ def train(cfg):
     print(f"\n  Dataset    : {dataset}")
     print(f"  Data root  : {data_root}")
     print(f"  Batch size : {batch_size}  Epochs: {epochs}  LR: {lr}")
-    print(f"  Loss weights: w1={weights[0]}, w2={weights[1]}, w3={weights[2]}\n")
+    print(f"  Loss weights: w1={weights[0]}, w2={weights[1]}, w3={weights[2]}, w4={weights[3]}\n")
 
     exp_dir  = paths.new_train_dir("ee_resnet50")
     log_path = os.path.join(exp_dir, "train_log.csv")
@@ -119,10 +126,10 @@ def train(cfg):
     best_test_acc = 0.0
 
     for epoch in range(epochs):
-        train_loss, train_acc1, train_acc2, train_acc3 = train_one_epoch(
+        train_loss, tr_acc1, tr_acc2, tr_acc3, tr_acc_main = train_one_epoch(
             model, train_loader, optimizer, criterion, device, weights=weights
         )
-        test_loss, test_acc1, test_acc2, test_acc_main = evaluate(
+        test_loss, te_acc1, te_acc2, te_acc3, te_acc_main = evaluate(
             model, test_loader, criterion, device
         )
 
@@ -131,24 +138,28 @@ def train(cfg):
 
         print(
             f"[{epoch+1:3d}/{epochs}] lr={current_lr:.5f} | "
-            f"train loss={train_loss:.4f}  ee1={train_acc1:.4f} ee2={train_acc2:.4f} main={train_acc3:.4f} | "
-            f"test  loss={test_loss:.4f}  ee1={test_acc1:.4f}  ee2={test_acc2:.4f}  main={test_acc_main:.4f}"
+            f"train loss={train_loss:.4f}  "
+            f"ee1={tr_acc1:.4f} ee2={tr_acc2:.4f} ee3={tr_acc3:.4f} main={tr_acc_main:.4f} | "
+            f"test  loss={test_loss:.4f}  "
+            f"ee1={te_acc1:.4f}  ee2={te_acc2:.4f}  ee3={te_acc3:.4f}  main={te_acc_main:.4f}"
         )
 
         log_to_csv(log_path, epoch + 1, {
             "lr":             current_lr,
             "train_loss":     train_loss,
-            "train_acc_ee1":  train_acc1,
-            "train_acc_ee2":  train_acc2,
-            "train_acc_main": train_acc3,
+            "train_acc_ee1":  tr_acc1,
+            "train_acc_ee2":  tr_acc2,
+            "train_acc_ee3":  tr_acc3,
+            "train_acc_main": tr_acc_main,
             "test_loss":      test_loss,
-            "test_acc_ee1":   test_acc1,
-            "test_acc_ee2":   test_acc2,
-            "test_acc_main":  test_acc_main,
+            "test_acc_ee1":   te_acc1,
+            "test_acc_ee2":   te_acc2,
+            "test_acc_ee3":   te_acc3,
+            "test_acc_main":  te_acc_main,
         })
 
-        if test_acc_main > best_test_acc:
-            best_test_acc = test_acc_main
+        if te_acc_main > best_test_acc:
+            best_test_acc = te_acc_main
             torch.save(
                 model.state_dict(),
                 os.path.join(exp_dir, "checkpoints", "best.pth"),
@@ -169,7 +180,7 @@ def train(cfg):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="EE ResNet-50 학습")
+    parser = argparse.ArgumentParser(description="EE ResNet-50 학습 (4 exits)")
     parser.add_argument("--dataset",    type=str, default="cifar10",
                         choices=["cifar10", "imagenet"])
     parser.add_argument("--data-root",  type=str, default=None)
@@ -178,11 +189,13 @@ if __name__ == "__main__":
     parser.add_argument("--lr",         type=float, default=None)
     parser.add_argument("--seed",       type=int,   default=None)
     parser.add_argument("--w1",         type=float, default=None,
-                        help="exit1 loss 가중치")
+                        help="exit1 (layer1) loss 가중치")
     parser.add_argument("--w2",         type=float, default=None,
-                        help="exit2 loss 가중치")
+                        help="exit2 (layer2) loss 가중치")
     parser.add_argument("--w3",         type=float, default=None,
-                        help="main loss 가중치")
+                        help="exit3 (layer3) loss 가중치")
+    parser.add_argument("--w4",         type=float, default=None,
+                        help="main  (layer4) loss 가중치")
     args = parser.parse_args()
 
     cfg = build_config(args)

@@ -1,5 +1,5 @@
 """
-run_sweep_n.py  —  EE + VEE threshold sweep N회 반복 + 단일 파일 취합
+run_sweep_n.py  —  EE + VEE + EE50 threshold sweep N회 반복 + 단일 파일 취합
 
 기존 방식(step1_sweep.sh에서 infer_trt.py를 N번 호출 → run_* 디렉토리 N개 생성)을
 다음과 같이 개선합니다:
@@ -10,14 +10,14 @@ run_sweep_n.py  —  EE + VEE threshold sweep N회 반복 + 단일 파일 취합
 
 생성되는 출력:
   {EXP_DIR}/eval/sweep_N{N}_YYYYMMDD_HHMMSS/
-    ee_sweep_raw.json       ← N회 × 전체 threshold 원시 latency 포함 전체 데이터
-    ee_sweep_summary.csv    ← threshold별 통계 (mean/std/min/max)
-    vee_sweep_raw.json
+    ee_sweep_raw.json       ← EE ResNet-18 (3-seg)
+    ee_sweep_summary.csv
+    vee_sweep_raw.json      ← VEE ResNet-18 (2-seg)
     vee_sweep_summary.csv
-    ee_sweep_dist.png       ← threshold별 latency distribution overlay (KDE)
-    vee_sweep_dist.png
-    ee_sweep_summary.png    ← accuracy / exit rate / p99 latency 요약 (error bar)
-    vee_sweep_summary.png
+    ee50_sweep_raw.json     ← EE ResNet-50 (4-seg)
+    ee50_sweep_summary.csv
+    *_sweep_dist.png        ← KDE overlay
+    *_sweep_summary.png     ← accuracy / exit rate / p99 요약
 
 사용법:
   cd src
@@ -31,11 +31,13 @@ run_sweep_n.py  —  EE + VEE threshold sweep N회 반복 + 단일 파일 취합
   --dataset        cifar10 | imagenet (기본: cifar10)
   --num-samples    샘플 수 (기본: 1000)
   --thresholds     탐색 threshold 목록 (기본: 0.50~0.95, 0.05 step)
-  --seg1/2/3       EE 세그먼트 엔진 경로 (미지정 시 paths.py 자동 선택)
-  --vee-seg1/2     VEE 세그먼트 엔진 경로
-  --out-dir        결과 저장 디렉토리 (기본: {EXP_DIR}/eval/sweep_N{n}_YYYYMMDD/)
-  --no-ee          EE sweep 스킵
-  --no-vee         VEE sweep 스킵
+  --seg1/2/3       EE ResNet-18 세그먼트 엔진 경로
+  --vee-seg1/2     VEE ResNet-18 세그먼트 엔진 경로
+  --ee50-seg1/2/3/4  EE ResNet-50 세그먼트 엔진 경로
+  --out-dir        결과 저장 디렉토리
+  --no-ee          EE ResNet-18 sweep 스킵
+  --no-vee         VEE ResNet-18 sweep 스킵
+  --no-ee50        EE ResNet-50 sweep 스킵
 """
 
 import os
@@ -176,6 +178,74 @@ def run_ee_sweep_once(seg1: TRTEngine, seg2: TRTEngine, seg3: TRTEngine,
         'avg_ms':     float(np.mean(latencies)),
         'p50_ms':     float(np.percentile(latencies, 50)),
         'p99_ms':     float(np.percentile(latencies, 99)),
+    }
+
+
+# ── EE50 4-segment 단일 threshold 실행 ───────────────────────────────────────
+
+def run_ee50_sweep_once(seg1: TRTEngine, seg2: TRTEngine,
+                        seg3: TRTEngine, seg4: TRTEngine,
+                        images, labels, threshold: float):
+    """
+    EE ResNet-50 4-segment 추론 1회 실행.
+    텐서 이름 규칙:
+      seg1: image → (feat_layer1, ee1_logits)
+      seg2: feat_layer1 → (feat_layer2, ee2_logits)
+      seg3: feat_layer2 → (feat_layer3, ee3_logits)
+      seg4: feat_layer3 → main_logits
+    Returns: {accuracy, exit_rate:[ee1%,ee2%,ee3%,main%], latencies_ms:[...], stats}
+    """
+    correct     = 0
+    exit_counts = [0, 0, 0, 0]
+    latencies   = []
+
+    for img, lbl in zip(images, labels):
+        t0 = time.perf_counter()
+
+        out1        = seg1.infer(img)
+        ee1_logits  = out1.get('ee1_logits',  list(out1.values())[-1])
+        feat_layer1 = out1.get('feat_layer1', list(out1.values())[0])
+
+        conf = F.softmax(ee1_logits, dim=1).max().item()
+        if conf >= threshold:
+            pred = ee1_logits.argmax(dim=1).item()
+            exit_counts[0] += 1
+        else:
+            out2        = seg2.infer(feat_layer1)
+            ee2_logits  = out2.get('ee2_logits',  list(out2.values())[-1])
+            feat_layer2 = out2.get('feat_layer2', list(out2.values())[0])
+
+            conf = F.softmax(ee2_logits, dim=1).max().item()
+            if conf >= threshold:
+                pred = ee2_logits.argmax(dim=1).item()
+                exit_counts[1] += 1
+            else:
+                out3        = seg3.infer(feat_layer2)
+                ee3_logits  = out3.get('ee3_logits',  list(out3.values())[-1])
+                feat_layer3 = out3.get('feat_layer3', list(out3.values())[0])
+
+                conf = F.softmax(ee3_logits, dim=1).max().item()
+                if conf >= threshold:
+                    pred = ee3_logits.argmax(dim=1).item()
+                    exit_counts[2] += 1
+                else:
+                    out4        = seg4.infer(feat_layer3)
+                    main_logits = list(out4.values())[0]
+                    pred        = main_logits.argmax(dim=1).item()
+                    exit_counts[3] += 1
+
+        latencies.append((time.perf_counter() - t0) * 1000)
+        if pred == lbl:
+            correct += 1
+
+    n = len(labels)
+    return {
+        'accuracy':     correct / n,
+        'exit_rate':    [c / n * 100 for c in exit_counts],
+        'latencies_ms': latencies,
+        'avg_ms':       float(np.mean(latencies)),
+        'p50_ms':       float(np.percentile(latencies, 50)),
+        'p99_ms':       float(np.percentile(latencies, 99)),
     }
 
 
@@ -486,16 +556,22 @@ def main():
     parser.add_argument('--thresholds',  type=float, nargs='+',
                         default=list(np.round(np.arange(0.50, 1.00, 0.05), 2)),
                         help='탐색할 threshold 목록 (기본: 0.50~0.95)')
-    # EE 엔진 경로
+    # EE ResNet-18 엔진 경로
     parser.add_argument('--seg1',      type=str, default=None)
     parser.add_argument('--seg2',      type=str, default=None)
     parser.add_argument('--seg3',      type=str, default=None)
-    # VEE 엔진 경로
+    # VEE ResNet-18 엔진 경로
     parser.add_argument('--vee-seg1',  type=str, default=None)
     parser.add_argument('--vee-seg2',  type=str, default=None)
+    # EE ResNet-50 엔진 경로 (4-segment)
+    parser.add_argument('--ee50-seg1', type=str, default=None)
+    parser.add_argument('--ee50-seg2', type=str, default=None)
+    parser.add_argument('--ee50-seg3', type=str, default=None)
+    parser.add_argument('--ee50-seg4', type=str, default=None)
     # 모드 선택
-    parser.add_argument('--no-ee',  action='store_true', help='EE sweep 스킵')
-    parser.add_argument('--no-vee', action='store_true', help='VEE sweep 스킵')
+    parser.add_argument('--no-ee',   action='store_true', help='EE ResNet-18 sweep 스킵')
+    parser.add_argument('--no-vee',  action='store_true', help='VEE ResNet-18 sweep 스킵')
+    parser.add_argument('--no-ee50', action='store_true', help='EE ResNet-50 sweep 스킵')
     # 출력
     parser.add_argument('--out-dir', type=str, default=None,
                         help='결과 저장 디렉토리 (기본: {EXP_DIR}/eval/sweep_N{n}_YYYYMMDD/)')
@@ -508,13 +584,18 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     # 엔진 경로 자동 선택
-    ee_engine_dir  = paths.engine_dir('ee_resnet18')
-    vee_engine_dir = paths.engine_dir('vee_resnet18')
-    seg1     = args.seg1     or os.path.join(ee_engine_dir,  'seg1.engine')
-    seg2     = args.seg2     or os.path.join(ee_engine_dir,  'seg2.engine')
-    seg3     = args.seg3     or os.path.join(ee_engine_dir,  'seg3.engine')
-    vee_seg1 = args.vee_seg1 or os.path.join(vee_engine_dir, 'vee_seg1.engine')
-    vee_seg2 = args.vee_seg2 or os.path.join(vee_engine_dir, 'vee_seg2.engine')
+    ee_engine_dir   = paths.engine_dir('ee_resnet18')
+    vee_engine_dir  = paths.engine_dir('vee_resnet18')
+    ee50_engine_dir = paths.engine_dir('ee_resnet50')
+    seg1      = args.seg1      or os.path.join(ee_engine_dir,   'seg1.engine')
+    seg2      = args.seg2      or os.path.join(ee_engine_dir,   'seg2.engine')
+    seg3      = args.seg3      or os.path.join(ee_engine_dir,   'seg3.engine')
+    vee_seg1  = args.vee_seg1  or os.path.join(vee_engine_dir,  'vee_seg1.engine')
+    vee_seg2  = args.vee_seg2  or os.path.join(vee_engine_dir,  'vee_seg2.engine')
+    ee50_seg1 = args.ee50_seg1 or os.path.join(ee50_engine_dir, 'ee50_seg1.engine')
+    ee50_seg2 = args.ee50_seg2 or os.path.join(ee50_engine_dir, 'ee50_seg2.engine')
+    ee50_seg3 = args.ee50_seg3 or os.path.join(ee50_engine_dir, 'ee50_seg3.engine')
+    ee50_seg4 = args.ee50_seg4 or os.path.join(ee50_engine_dir, 'ee50_seg4.engine')
 
     thresholds = sorted(set(round(t, 2) for t in args.thresholds))
 
@@ -599,6 +680,39 @@ def main():
             plot_summary(vee_results, 'VEE ResNet-18',
                          os.path.join(out_dir, 'vee_sweep_summary.png'),
                          ['Exit1 (layer1)', 'Main (layer4)'])
+
+    # ── EE50 4-segment Sweep ──────────────────────────────────────────────────
+    if not args.no_ee50:
+        ee50_engines = [ee50_seg1, ee50_seg2, ee50_seg3, ee50_seg4]
+        if not all(os.path.exists(p) for p in ee50_engines):
+            print(f'[WARN] EE50 엔진 파일 없음, EE50 sweep 스킵')
+        else:
+            print('\n=== EE ResNet-50 TRT 엔진 로드 ===')
+            s1 = TRTEngine(ee50_seg1)
+            s2 = TRTEngine(ee50_seg2)
+            s3 = TRTEngine(ee50_seg3)
+            s4 = TRTEngine(ee50_seg4)
+
+            print(f'\n[EE50] {args.n}회 sweep 시작...')
+            ee50_results = run_n_sweeps(
+                run_ee50_sweep_once,
+                (s1, s2, s3, s4),
+                images, labels, thresholds, args.n, 'EE50',
+            )
+
+            save_raw_json(ee50_results,
+                          os.path.join(out_dir, 'ee50_sweep_raw.json'),
+                          {**metadata, 'model': 'ee50'})
+            save_summary_csv(ee50_results,
+                             os.path.join(out_dir, 'ee50_sweep_summary.csv'),
+                             'EE50-4Seg')
+
+            plot_latency_dist(ee50_results, 'EE ResNet-50',
+                              os.path.join(out_dir, 'ee50_sweep_dist.png'))
+            plot_summary(ee50_results, 'EE ResNet-50',
+                         os.path.join(out_dir, 'ee50_sweep_summary.png'),
+                         ['Exit1 (layer1)', 'Exit2 (layer2)',
+                          'Exit3 (layer3)', 'Main (layer4)'])
 
     print(f'\n{"=" * 60}')
     print(f'  Sweep 완료!')
