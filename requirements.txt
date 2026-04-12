@@ -7,3 +7,4 @@ tqdm==4.66.5
 matplotlib==3.9.2
 numpy<2.0  # 호환성
 pillow>=10.0
+timm>=1.0.0
