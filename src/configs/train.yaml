@@ -46,3 +46,24 @@ imagenet:
   scheduler:
     T_max: 90
     eta_min: 1.0e-4
+
+# ── EE-ViT 전용 하이퍼파라미터 프리셋 ────────────────────────────────────────────
+# train/train_vit.py 에서 자동 병합됨.
+# backbone frozen 상태에서 exit head만 fine-tuning하므로
+# - optimizer: AdamW (SGD 대신)
+# - epochs: 30 (from-scratch 학습보다 훨씬 짧아도 충분)
+# - batch_size: 64 (ViT-B 메모리 고려)
+vit:
+  data_root: ../data    # ImageNet 경로 (imagenet 프리셋과 동일 구조)
+  num_workers: 8
+  train:
+    batch_size: 64
+    epochs: 30
+    seed: 42
+    weight_mode: equal  # equal | linear (exit head loss 가중치 모드)
+  optimizer:
+    lr: 1.0e-3
+    weight_decay: 0.05
+  scheduler:
+    T_max: 30
+    eta_min: 1.0e-5
