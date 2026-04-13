@@ -32,6 +32,10 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # ── 서버 고정 경로 ────────────────────────────────────────────
 DATA_ROOT="/home2"    # → /home2/imagenet/train, /home2/imagenet/val
 
+# ── HuggingFace 캐시 경로 (공유 캐시 권한 오류 방지) ──────────
+export HF_HOME="/home/cap10/.cache/huggingface"
+mkdir -p "$HF_HOME"
+
 # ── 5090 최적 기본값 (환경변수로 오버라이드 가능) ─────────────
 EPOCHS="${EPOCHS:-30}"
 BATCH_SIZE="${BATCH_SIZE:-128}"    # 5090 24GB VRAM 기준 여유 있게
