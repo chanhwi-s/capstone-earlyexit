@@ -42,7 +42,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 SRC_DIR="$PROJECT_ROOT/src"
 
 # ── ImageNet 경로 ────────────────────────────────────────────
-DATA_ROOT="${DATA_ROOT:-/home2/imagenet}"
+DATA_ROOT="${DATA_ROOT:-/home2}"
 
 # ── 0. 실험 디렉토리 생성 ────────────────────────────────────
 EXP_NAME="${EXP_NAME:-exp_$(date +%Y%m%d_%H%M%S)}"
