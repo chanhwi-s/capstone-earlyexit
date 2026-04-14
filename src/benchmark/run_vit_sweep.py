@@ -11,8 +11,9 @@ ResNet sweep과의 차이:
 
 생성 파일 ({EXP_DIR}/eval/vit_sweep_N{N}_YYYYMMDD_HHMMSS/):
   vit_sweep_raw.json         ← N회 × threshold별 원시 결과
-  vit_sweep_summary.csv      ← threshold별 통계
+  vit_sweep_summary.csv      ← threshold별 통계 + per-exit block accuracy
   vit_sweep_exit_heatmap.png ← ★ exit block 분포 heatmap (threshold × block)
+  vit_sweep_acc_heatmap.png  ← ★ per-exit block accuracy heatmap (threshold × block)
   vit_sweep_latency_dist.png ← threshold별 KDE latency overlay
   vit_sweep_summary.png      ← accuracy / avg_exit_block / p99 / compute_savings
 
@@ -116,13 +117,15 @@ def run_sweep_once(model: EEViT, images, labels, threshold: float,
     Returns:
         accuracy      : float
         exit_counts   : list[int] 길이 12, 각 블록에서 탈출한 샘플 수
+        acc_per_exit  : list[float] 길이 12, 각 블록에서 탈출한 샘플들의 accuracy
         latencies_ms  : list[float] 길이 (num_samples - warmup), warmup 제외
         avg_ms, p50_ms, p99_ms : float
     """
-    n_exits    = model.NUM_BLOCKS
-    exit_counts = [0] * n_exits
-    latencies   = []
-    correct     = 0
+    n_exits         = model.NUM_BLOCKS
+    exit_counts     = [0] * n_exits
+    correct_per_exit = [0] * n_exits   # 각 블록에서 탈출한 샘플 중 정답 수
+    latencies       = []
+    correct         = 0
 
     for i, (img, lbl) in enumerate(zip(images, labels)):
         img_dev = img.to(device)
@@ -142,19 +145,27 @@ def run_sweep_once(model: EEViT, images, labels, threshold: float,
         if i >= warmup:
             latencies.append(elapsed_ms)
 
-        exit_counts[exit_idx - 1] += 1      # exit_idx는 1-indexed
+        block_i = exit_idx - 1          # exit_idx는 1-indexed → 0-indexed
+        exit_counts[block_i] += 1
         pred = logits.argmax(dim=1).item()
         if pred == lbl:
             correct += 1
+            correct_per_exit[block_i] += 1
 
     n   = len(labels)
     lat = np.array(latencies) if latencies else np.array([0.0])
+    # 해당 블록을 통과한 샘플이 없으면 None (0으로 나누기 방지)
+    acc_per_exit = [
+        correct_per_exit[i] / exit_counts[i] if exit_counts[i] > 0 else None
+        for i in range(n_exits)
+    ]
     return {
-        'accuracy':    correct / n,
-        'exit_counts': exit_counts,
-        'exit_rate':   [c / n * 100 for c in exit_counts],  # % per block
+        'accuracy':       correct / n,
+        'exit_counts':    exit_counts,
+        'exit_rate':      [c / n * 100 for c in exit_counts],  # % per block
+        'acc_per_exit':   acc_per_exit,
         'avg_exit_block': sum((i + 1) * exit_counts[i] for i in range(n_exits)) / n,
-        'latencies_ms': latencies,
+        'latencies_ms':   latencies,
         'avg_ms':  float(np.mean(lat)),
         'p50_ms':  float(np.percentile(lat, 50)),
         'p99_ms':  float(np.percentile(lat, 99)),
@@ -176,9 +187,10 @@ def run_n_sweeps(model: EEViT, images, labels,
                                   avg_exit_block, runs:[...], summary:{...}}}
     """
     results = {str(round(t, 2)): {
-        'threshold':     round(t, 2),
-        'accuracy':      None,
-        'exit_rate':     None,
+        'threshold':      round(t, 2),
+        'accuracy':       None,
+        'exit_rate':      None,
+        'acc_per_exit':   None,   # 각 exit block에서 탈출한 샘플들의 accuracy
         'avg_exit_block': None,
         'runs': [],
     } for t in thresholds}
@@ -197,6 +209,7 @@ def run_n_sweeps(model: EEViT, images, labels,
             if results[key]['accuracy'] is None:
                 results[key]['accuracy']       = r['accuracy']
                 results[key]['exit_rate']      = r['exit_rate']
+                results[key]['acc_per_exit']   = r['acc_per_exit']
                 results[key]['avg_exit_block'] = r['avg_exit_block']
 
             results[key]['runs'].append({
@@ -256,15 +269,17 @@ def save_raw_json(results: dict, n_samples: int, device_str: str,
 
 def save_summary_csv(results: dict, n_exits: int, out_path: str):
     exit_rate_fields = [f'exit_rate_b{i+1}' for i in range(n_exits)]
+    acc_per_exit_fields = [f'acc_b{i+1}' for i in range(n_exits)]
     fieldnames = (
         ['threshold', 'accuracy', 'avg_exit_block', 'compute_savings_pct',
          'n_runs', 'p99_mean', 'p99_std', 'avg_mean', 'avg_std', 'p50_mean']
-        + exit_rate_fields
+        + exit_rate_fields + acc_per_exit_fields
     )
     rows = []
     for key, data in sorted(results.items(), key=lambda x: float(x[0])):
-        s  = data['summary']
-        er = data['exit_rate'] or [0.0] * n_exits
+        s   = data['summary']
+        er  = data['exit_rate']    or [0.0]  * n_exits
+        ape = data['acc_per_exit'] or [None] * n_exits
         compute_savings = (1 - data['avg_exit_block'] / n_exits) * 100 if data['avg_exit_block'] else 0.0
         row = {
             'threshold':            data['threshold'],
@@ -280,6 +295,8 @@ def save_summary_csv(results: dict, n_exits: int, out_path: str):
         }
         for i, rate in enumerate(er):
             row[f'exit_rate_b{i+1}'] = round(rate, 2)
+        for i, acc in enumerate(ape):
+            row[f'acc_b{i+1}'] = round(acc * 100, 2) if acc is not None else ''
         rows.append(row)
 
     with open(out_path, 'w', newline='') as f:
@@ -360,6 +377,92 @@ def plot_exit_heatmap(results: dict, n_exits: int, save_path: str):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  exit heatmap 저장: {save_path}")
+
+
+# ── Plot 1b: Per-Exit Accuracy Heatmap ───────────────────────────────────────
+
+def plot_acc_heatmap(results: dict, n_exits: int, save_path: str):
+    """
+    x-axis: exit block (1~12)
+    y-axis: threshold
+    color : accuracy (%) of samples that exited at each block
+            — 샘플 수 0인 셀은 회색으로 표시
+    """
+    thresholds = sorted(results.keys(), key=float)
+    acc_matrix  = np.full((len(thresholds), n_exits), np.nan)
+    rate_matrix = np.zeros((len(thresholds), n_exits))
+
+    for row_i, key in enumerate(thresholds):
+        ape = results[key]['acc_per_exit'] or [None] * n_exits
+        er  = results[key]['exit_rate']    or [0.0]  * n_exits
+        for col_j in range(n_exits):
+            rate_matrix[row_i, col_j] = er[col_j]
+            if ape[col_j] is not None:
+                acc_matrix[row_i, col_j] = ape[col_j] * 100  # → %
+
+    # NaN(샘플 없음) 처리용 masked array
+    masked = np.ma.array(acc_matrix, mask=np.isnan(acc_matrix))
+
+    cmap = plt.cm.RdYlGn
+    cmap.set_bad(color='#cccccc')  # 샘플 없는 셀 = 회색
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig.suptitle('EE-ViT-B/16  —  Per-Exit Block Accuracy by Threshold', fontsize=13)
+
+    # ── subplot 1: accuracy heatmap ─────────────────────────────────────────
+    ax = axes[0]
+    im = ax.imshow(masked, aspect='auto', cmap=cmap, vmin=0, vmax=100)
+    ax.set_xticks(range(n_exits))
+    ax.set_xticklabels([f'B{i+1}' for i in range(n_exits)], fontsize=8)
+    ax.set_yticks(range(len(thresholds)))
+    ax.set_yticklabels([f'{float(t):.2f}' for t in thresholds], fontsize=8)
+    ax.set_xlabel('Exit Block')
+    ax.set_ylabel('Threshold')
+    ax.set_title('Accuracy (%) of Samples Exiting at Each Block\n(grey = no samples exited here)')
+    fig.colorbar(im, ax=ax, label='Accuracy (%)')
+
+    # 셀 값 표시 (exit rate >= 1% 이상 셀만)
+    for row_i in range(len(thresholds)):
+        for col_j in range(n_exits):
+            if rate_matrix[row_i, col_j] >= 1.0 and not np.isnan(acc_matrix[row_i, col_j]):
+                val = acc_matrix[row_i, col_j]
+                ax.text(col_j, row_i, f'{val:.0f}',
+                        ha='center', va='center', fontsize=7,
+                        color='black' if 20 < val < 80 else 'white')
+
+    # ── subplot 2: overall accuracy vs threshold (참고용) ─────────────────
+    ax = axes[1]
+    thr_vals = [float(t) for t in thresholds]
+    overall  = [results[t]['accuracy'] or 0 for t in thresholds]
+    ax.plot(thr_vals, [a * 100 for a in overall], 'o-', color='steelblue',
+            linewidth=2, markersize=6, label='Overall accuracy')
+
+    # 가장 많이 사용되는 exit block의 accuracy를 overlay
+    for col_j in range(n_exits):
+        col_accs = [acc_matrix[row_i, col_j] for row_i in range(len(thresholds))]
+        col_rates = [rate_matrix[row_i, col_j] for row_i in range(len(thresholds))]
+        # 어떤 threshold에서든 exit rate >= 5% 인 block만 표시
+        if max(col_rates) >= 5.0:
+            # NaN 제거 후 plot
+            valid_thr = [thr_vals[i] for i in range(len(thresholds))
+                         if not np.isnan(col_accs[i])]
+            valid_acc = [col_accs[i] for i in range(len(thresholds))
+                         if not np.isnan(col_accs[i])]
+            if valid_thr:
+                ax.plot(valid_thr, valid_acc, '--', linewidth=1, alpha=0.6,
+                        label=f'B{col_j+1} exit acc')
+
+    ax.set_xlabel('Threshold')
+    ax.set_ylabel('Accuracy (%)')
+    ax.set_title('Overall vs Per-Exit Block Accuracy\n(dashed = acc of samples exiting at that block)')
+    ax.set_ylim(0, 105)
+    ax.legend(fontsize=7, ncol=2)
+    ax.grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  per-exit accuracy heatmap 저장: {save_path}")
 
 
 # ── Plot 2: Latency Distribution KDE overlay ─────────────────────────────────
@@ -480,6 +583,8 @@ def plot_summary(results: dict, n_exits: int, save_path: str):
 
 def print_result_table(results: dict, n_exits: int):
     thresholds = sorted(results.keys(), key=float)
+
+    # ── 전체 요약 테이블 ──────────────────────────────────────────────────────
     print(f"\n{'='*80}")
     print(f"{'EE-ViT-B/16 Threshold Sweep Summary':^80}")
     print(f"{'='*80}")
@@ -496,7 +601,27 @@ def print_result_table(results: dict, n_exits: int):
               f"{savings:>6.1f}%  "
               f"{s['p99_mean']:>9.2f}  "
               f"±{s['p99_std']:>5.2f}")
-    print(f"{'='*80}\n")
+    print(f"{'='*80}")
+
+    # ── per-exit accuracy 테이블 ──────────────────────────────────────────────
+    # 헤더: block 번호
+    header = f"{'thr':>6}" + "".join(f"  B{i+1:>2}" for i in range(n_exits))
+    print(f"\n  Per-Exit Block Accuracy (%)  — 각 block에서 탈출한 샘플의 정확도")
+    print(f"  (샘플 없는 block = '  -')")
+    print(f"  {'-'*len(header)}")
+    print(f"  {header}")
+    print(f"  {'-'*len(header)}")
+    for key in thresholds:
+        d   = results[key]
+        ape = d['acc_per_exit'] or [None] * n_exits
+        row = f"{d['threshold']:>6.2f}"
+        for acc in ape:
+            if acc is None:
+                row += f"    -"
+            else:
+                row += f"  {acc*100:>4.0f}"
+        print(f"  {row}")
+    print(f"  {'-'*len(header)}\n")
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -578,6 +703,8 @@ def main():
     print("그래프 생성 중...")
     plot_exit_heatmap(results, model.NUM_BLOCKS,
                       os.path.join(out_dir, 'vit_sweep_exit_heatmap.png'))
+    plot_acc_heatmap(results, model.NUM_BLOCKS,
+                     os.path.join(out_dir, 'vit_sweep_acc_heatmap.png'))
     plot_latency_dist(results, args.n,
                       os.path.join(out_dir, 'vit_sweep_latency_dist.png'))
     plot_summary(results, model.NUM_BLOCKS,
