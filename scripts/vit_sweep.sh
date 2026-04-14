@@ -84,6 +84,10 @@ if [[ ! -f "$CHECKPOINT" ]]; then
     exit 1
 fi
 
+# ── HuggingFace 캐시 경로 (공유 캐시 권한 오류 방지) ──────────
+export HF_HOME="/home/cap10/.cache/huggingface"
+mkdir -p "$HF_HOME"
+
 # ── 파라미터 ─────────────────────────────────────────────────
 N_SAMPLES="${N_SAMPLES:-1000}"
 WARMUP="${WARMUP:-20}"
