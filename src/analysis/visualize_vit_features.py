@@ -17,18 +17,21 @@ patch token [196, 768]을 14×14 공간 그리드로 복원해 시각화.
 사용법:
   cd src
   python analysis/visualize_vit_features.py
+  python analysis/visualize_vit_features.py --num-samples 5
   python analysis/visualize_vit_features.py --image /path/to/image.jpg
   python analysis/visualize_vit_features.py --model ee_vit --checkpoint /path/to/best.pth
-  python analysis/visualize_vit_features.py --model plain_vit --out-dir /tmp/vit_vis
+  python analysis/visualize_vit_features.py --model plain_vit --num-samples 8 --out-dir /tmp/vit_vis
 
 인자:
-  --image       시각화할 이미지 경로 (기본: ImageNet val 첫 번째 샘플)
-  --model       plain_vit | ee_vit (기본: plain_vit)
-  --checkpoint  EE-ViT 체크포인트 경로 (--model ee_vit 일 때만 사용)
-  --data-root   ImageNet 루트 경로
-  --out-dir     결과 저장 디렉토리 (기본: /tmp/vit_features_YYYYMMDD_HHMMSS)
-  --blocks      시각화할 블록 번호 목록 (기본: 0~11 전체)
-                예: --blocks 0 3 6 9 11
+  --image        시각화할 단일 이미지 경로 (지정 시 --num-samples 무시)
+  --num-samples  ImageNet val에서 로드할 샘플 수 (기본: 1)
+                 각 샘플은 sample_001/, sample_002/ ... 서브디렉토리에 저장
+  --model        plain_vit | ee_vit (기본: plain_vit)
+  --checkpoint   EE-ViT 체크포인트 경로 (--model ee_vit 일 때만 사용)
+  --data-root    ImageNet 루트 경로 (기본: /home2)
+  --out-dir      결과 저장 디렉토리 (기본: /tmp/vit_features_YYYYMMDD_HHMMSS)
+  --blocks       시각화할 블록 번호 0-indexed (기본: 0~11 전체)
+                 예: --blocks 0 3 6 9 11
 """
 
 import os
@@ -87,27 +90,36 @@ def preprocess_image(path: str) -> tuple[torch.Tensor, np.ndarray]:
     return tensor, orig
 
 
-def load_first_imagenet_sample(data_root: str) -> tuple[torch.Tensor, np.ndarray]:
-    """ImageNet val 첫 번째 샘플 로드."""
+def load_imagenet_samples(num_samples: int,
+                          data_root: str = None,
+                          num_workers: int = 4) -> list[tuple[torch.Tensor, np.ndarray]]:
+    """
+    ImageNet val에서 num_samples개 로드.
+    Returns: list of (tensor [1,3,224,224], orig [224,224,3] uint8)
+    """
     from utils import load_config
     from datasets.dataloader import get_dataloader
 
     cfg = load_config('configs/train.yaml')
     if data_root is None:
-        data_root = cfg.get('vit', {}).get('data_root',
-                    cfg.get('imagenet', {}).get('data_root',
-                    cfg['dataset']['data_root']))
+        data_root = '/home2'   # 서버 기본 경로
 
     _, loader, _ = get_dataloader(
         dataset='imagenet', batch_size=1, data_root=data_root,
-        num_workers=0, seed=42,
+        num_workers=num_workers, seed=42,
     )
-    img, _ = next(iter(loader))
 
-    arr  = img[0].permute(1, 2, 0).numpy()
-    arr  = arr * _STD + _MEAN
-    orig = np.clip(arr * 255, 0, 255).astype(np.uint8)
-    return img, orig
+    samples = []
+    for i, (img, lbl) in enumerate(loader):
+        if i >= num_samples:
+            break
+        arr  = img[0].permute(1, 2, 0).numpy()
+        arr  = arr * _STD + _MEAN
+        orig = np.clip(arr * 255, 0, 255).astype(np.uint8)
+        samples.append((img, orig, lbl[0].item()))
+
+    print(f"  ImageNet val 로드 완료: {len(samples)}개 샘플")
+    return samples
 
 
 # ── Feature Hook ──────────────────────────────────────────────────────────────
@@ -143,6 +155,10 @@ class BlockFeatureHook:
 
             h = block.register_forward_hook(make_hook(idx))
             self._handles.append(h)
+
+    def reset(self):
+        """캡처 목록만 초기화 (hook은 유지). 샘플 간 재사용 시 호출."""
+        self.captures.clear()
 
     def remove(self):
         for h in self._handles:
@@ -392,22 +408,62 @@ def print_and_save_shapes(captures: list, save_path: str):
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
+def run_one_sample(wrapper, blocks, tensor: torch.Tensor, orig: np.ndarray,
+                   label: int, sample_dir: str, target_blocks: list,
+                   device: torch.device, hook: 'BlockFeatureHook',
+                   save_shapes: bool = False):
+    """단일 샘플에 대해 hook 캡처 → 그래프 저장."""
+    os.makedirs(sample_dir, exist_ok=True)
+
+    hook.reset()
+    with torch.no_grad():
+        out = wrapper(tensor.to(device))
+
+    # plain_vit: logits tensor, ee_vit(threshold=None): list of logits
+    if isinstance(out, list):
+        pred = out[-1].argmax(dim=1).item()
+    else:
+        pred = out.argmax(dim=1).item()
+
+    captures = sorted(hook.captures, key=lambda c: c['block_idx'])
+
+    if save_shapes:
+        print_and_save_shapes(captures,
+                              os.path.join(os.path.dirname(sample_dir),
+                                           'feature_shapes.txt'))
+
+    print(f"  그래프 생성 중... (label={label}, pred={pred})")
+    plot_mean_all_blocks(captures, orig, target_blocks,
+                         os.path.join(sample_dir, 'feature_mean_all_blocks.png'))
+    plot_pca_all_blocks(captures, orig, target_blocks,
+                        os.path.join(sample_dir, 'feature_pca_all_blocks.png'))
+    for block_i in target_blocks:
+        detail_path = os.path.join(sample_dir,
+                                   f'feature_block_{block_i+1:02d}_detail.png')
+        plot_block_detail(captures, orig, block_i, detail_path)
+
+    print(f"    저장 완료: {sample_dir}/")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='ViT-B/16 encoder block별 feature map 2D 시각화')
-    parser.add_argument('--image',      type=str, default=None,
-                        help='시각화할 이미지 경로 (기본: ImageNet val 첫 샘플)')
-    parser.add_argument('--model',      type=str, default='plain_vit',
+    parser.add_argument('--image',       type=str,   default=None,
+                        help='단일 이미지 경로 (지정 시 --num-samples 무시)')
+    parser.add_argument('--num-samples', type=int,   default=1,
+                        help='ImageNet val에서 로드할 샘플 수 (기본: 1)')
+    parser.add_argument('--model',       type=str,   default='plain_vit',
                         choices=['plain_vit', 'ee_vit'],
                         help='plain_vit | ee_vit (기본: plain_vit)')
-    parser.add_argument('--checkpoint', type=str, default=None,
+    parser.add_argument('--checkpoint',  type=str,   default=None,
                         help='EE-ViT 체크포인트 경로 (--model ee_vit 시 사용)')
-    parser.add_argument('--data-root',  type=str, default=None,
-                        help='ImageNet 루트 경로')
-    parser.add_argument('--out-dir',    type=str, default=None,
+    parser.add_argument('--data-root',   type=str,   default='/home2',
+                        help='ImageNet 루트 경로 (기본: /home2)')
+    parser.add_argument('--out-dir',     type=str,   default=None,
                         help='결과 저장 디렉토리')
-    parser.add_argument('--blocks',     type=int, nargs='+', default=None,
-                        help='시각화할 블록 번호 0-indexed (기본: 0~11 전체)')
+    parser.add_argument('--blocks',      type=int,   nargs='+', default=None,
+                        help='시각화할 블록 번호 0-indexed (기본: 0~11 전체)\n'
+                             '예: --blocks 0 3 6 9 11')
     args = parser.parse_args()
 
     # ── device ──────────────────────────────────────────────────────────────
@@ -428,15 +484,14 @@ def main():
     target_blocks = args.blocks if args.blocks else list(range(N_BLOCKS))
     target_blocks = [b for b in target_blocks if 0 <= b < N_BLOCKS]
 
-    # ── 이미지 로드 ──────────────────────────────────────────────────────────
+    # ── 샘플 준비 ────────────────────────────────────────────────────────────
     if args.image:
         print(f"\n이미지 로드: {args.image}")
         tensor, orig = preprocess_image(args.image)
+        samples = [(tensor, orig, -1)]   # label 모름
     else:
-        print("\nImageNet val 첫 샘플 로드 중...")
-        tensor, orig = load_first_imagenet_sample(args.data_root)
-
-    tensor = tensor.to(device)
+        print(f"\nImageNet val 샘플 {args.num_samples}개 로드 중...")
+        samples = load_imagenet_samples(args.num_samples, args.data_root)
 
     # ── 모델 로드 ─────────────────────────────────────────────────────────────
     print(f"\n모델 로드 중: {args.model}")
@@ -456,43 +511,36 @@ def main():
     wrapper.eval()
     print(f"  모델 로드 완료")
 
-    # ── Hook 등록 및 Forward ──────────────────────────────────────────────────
-    print("\nHook 등록 및 forward pass...")
+    # ── Hook 등록 (모델 로드 후 한 번만) ─────────────────────────────────────
     hook = BlockFeatureHook()
     hook.register(blocks)
 
-    with torch.no_grad():
-        _ = wrapper(tensor)
+    # ── 샘플별 시각화 ────────────────────────────────────────────────────────
+    n = len(samples)
+    for idx, item in enumerate(samples):
+        tensor, orig, label = item
+        # 샘플이 1개면 루트에, 여러 개면 sample_NNN/ 서브디렉토리에 저장
+        if n == 1:
+            sample_dir = out_dir
+        else:
+            sample_dir = os.path.join(out_dir, f'sample_{idx+1:03d}')
+
+        print(f"\n[{idx+1}/{n}] 샘플 처리 중... ", end='')
+        run_one_sample(wrapper, blocks, tensor, orig, label,
+                       sample_dir, target_blocks, device, hook,
+                       save_shapes=(idx == 0))
 
     hook.remove()
 
-    captures = sorted(hook.captures, key=lambda c: c['block_idx'])
-    print(f"  캡처 완료: {len(captures)}개 블록")
-
-    # ── Shape 출력 ────────────────────────────────────────────────────────────
-    print_and_save_shapes(captures,
-                          os.path.join(out_dir, 'feature_shapes.txt'))
-
-    # ── 그래프 생성 ───────────────────────────────────────────────────────────
-    print("\n그래프 생성 중...")
-
-    plot_mean_all_blocks(captures, orig, target_blocks,
-                         os.path.join(out_dir, 'feature_mean_all_blocks.png'))
-
-    plot_pca_all_blocks(captures, orig, target_blocks,
-                        os.path.join(out_dir, 'feature_pca_all_blocks.png'))
-
-    for block_i in target_blocks:
-        detail_path = os.path.join(out_dir, f'feature_block_{block_i+1:02d}_detail.png')
-        plot_block_detail(captures, orig, block_i, detail_path)
-        print(f"  Block {block_i+1:>2} 상세 저장: {detail_path}")
-
-    print(f"\n완료! 결과 위치: {out_dir}")
-    print(f"\n  파일 목록:")
-    print(f"    feature_shapes.txt             — block별 shape 텍스트 요약")
-    print(f"    feature_mean_all_blocks.png    — 12블록 mean activation heatmap")
-    print(f"    feature_pca_all_blocks.png     — 12블록 PCA RGB feature map")
-    print(f"    feature_block_XX_detail.png    — 각 블록 in/out/diff 상세")
+    print(f"\n{'='*55}")
+    print(f"완료! 결과 위치: {out_dir}")
+    if n > 1:
+        print(f"  sample_001/ ~ sample_{n:03d}/  각 샘플별 서브디렉토리")
+    print(f"  feature_shapes.txt             — block별 shape 요약")
+    print(f"  feature_mean_all_blocks.png    — 12블록 mean activation heatmap")
+    print(f"  feature_pca_all_blocks.png     — 12블록 PCA RGB feature map")
+    print(f"  feature_block_XX_detail.png    — 각 블록 in/out/diff 상세")
+    print(f"{'='*55}")
 
 
 if __name__ == '__main__':
