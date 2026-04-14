@@ -79,10 +79,11 @@ fi
 
 # ── HuggingFace 캐시 경로 (공유 캐시 권한 오류 방지) ──────────
 export HF_HOME="/home/cap10/.cache/huggingface"
+export HF_HUB_OFFLINE=1    
 mkdir -p "$HF_HOME"
 
 # ── 파라미터 ─────────────────────────────────────────────────
-N_SAMPLES="${N_SAMPLES:-1000}"
+N_SAMPLES="${N_SAMPLES:-10000}"
 WARMUP="${WARMUP:-20}"
 DATA_ROOT="${DATA_ROOT:-/home2}"    # → /home2/imagenet/{train,val}
 
