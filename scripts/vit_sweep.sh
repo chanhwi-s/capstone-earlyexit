@@ -87,6 +87,7 @@ fi
 # ── 파라미터 ─────────────────────────────────────────────────
 N_SAMPLES="${N_SAMPLES:-1000}"
 WARMUP="${WARMUP:-20}"
+DATA_ROOT="${DATA_ROOT:-/home2}"    # → /home2/imagenet/{train,val}
 
 echo "============================================"
 echo "  EE-ViT-B/16 Threshold Sweep"
