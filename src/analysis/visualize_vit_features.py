@@ -229,7 +229,7 @@ def plot_mean_all_blocks(captures: list, orig: np.ndarray,
 
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.8, rows * 3.0))
     fig.suptitle('ViT-B/16  —  Mean Activation Map per Block\n'
-                 '(patch token 196개의 768채널 평균 → 14×14 heatmap)',
+                 '(avg 768 channels over 196 patch tokens → 14×14 heatmap)',
                  fontsize=12)
 
     axes = np.array(axes).flatten()
@@ -279,7 +279,7 @@ def plot_pca_all_blocks(captures: list, orig: np.ndarray,
 
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.8, rows * 3.0))
     fig.suptitle('ViT-B/16  —  PCA RGB Feature Map per Block\n'
-                 '(768차원 → PCA 3채널 → RGB, 각 블록 독립 PCA)',
+                 '(768-dim → PCA 3ch → RGB, per-block independent PCA)',
                  fontsize=12)
 
     axes = np.array(axes).flatten()
@@ -335,8 +335,8 @@ def plot_block_detail(captures: list, orig: np.ndarray,
 
     fig, axes = plt.subplots(1, 5, figsize=(17, 3.5))
     fig.suptitle(
-        f'ViT-B/16  Block {block_i + 1} / 12  —  In → Out Feature Map 상세\n'
-        f'in/out shape: [1, 197, 768]  →  patch token [14, 14, 768]  →  시각화',
+        f'ViT-B/16  Block {block_i + 1} / 12  —  In → Out Feature Map Detail\n'
+        f'in/out: [1, 197, 768]  →  patch tokens [14, 14, 768]  →  visualized',
         fontsize=10)
 
     def show(ax, img, title, cmap='viridis', vmin=None, vmax=None, norm=None):

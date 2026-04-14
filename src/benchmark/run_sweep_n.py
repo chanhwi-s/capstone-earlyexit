@@ -405,7 +405,7 @@ def plot_latency_dist(results: dict, title: str, save_path: str):
     cmap       = plt.cm.viridis(np.linspace(0.1, 0.9, len(thresholds)))
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-    fig.suptitle(f'{title}  —  Latency Distribution by Threshold  (N={len(list(results.values())[0]["runs"])}회)', fontsize=13)
+    fig.suptitle(f'{title}  —  Latency Distribution by Threshold  (N={len(list(results.values())[0]["runs"])} runs)', fontsize=13)
 
     # ── subplot 1: KDE overlay ────────────────────────────────────────────────
     ax = axes[0]
@@ -476,7 +476,7 @@ def plot_summary(results: dict, title: str, save_path: str, exit_labels: list):
     p99_stds   = [results[k]['summary']['p99_std']  for k in thresholds]
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-    fig.suptitle(f'{title}  —  Summary  (N={n_runs}회)', fontsize=13)
+    fig.suptitle(f'{title}  —  Summary  (N={n_runs} runs)', fontsize=13)
 
     # 1) Accuracy
     ax = axes[0]

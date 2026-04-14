@@ -456,7 +456,7 @@ def plot_latency(plain_result: dict, ee_results: dict, N: int, save_path: str):
     plain_p99  = plain_result['summary']['p99_mean']
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle(f'PlainViT vs EE-ViT  —  Latency Comparison  (N={N}회)', fontsize=13)
+    fig.suptitle(f'PlainViT vs EE-ViT  —  Latency Comparison  (N={N} runs)', fontsize=13)
 
     # ── subplot 1: avg latency ────────────────────────────────────────────
     ax = axes[0]
@@ -544,7 +544,7 @@ def plot_tradeoff(plain_result: dict, ee_results: dict, save_path: str):
     fig.colorbar(sc, ax=ax, label='Threshold')
     ax.set_xlabel('Avg Latency (ms)')
     ax.set_ylabel('Top-1 Accuracy (%)')
-    ax.set_title('Accuracy vs Latency\n(← 왼쪽 위가 이상적)')
+    ax.set_title('Accuracy vs Latency\n(← upper-left is ideal)')
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 
@@ -572,7 +572,7 @@ def plot_tradeoff(plain_result: dict, ee_results: dict, save_path: str):
     fig.colorbar(sc2, ax=ax, label='Threshold')
     ax.set_xlabel('Compute Savings (%, based on avg exit block)')
     ax.set_ylabel('Accuracy Drop vs PlainViT (%p)')
-    ax.set_title('Compute Savings vs Accuracy Drop\n(→ 오른쪽 아래가 이상적)')
+    ax.set_title('Compute Savings vs Accuracy Drop\n(→ lower-right is ideal)')
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 

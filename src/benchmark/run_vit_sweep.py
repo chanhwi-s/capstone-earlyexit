@@ -473,7 +473,7 @@ def plot_latency_dist(results: dict, N: int, save_path: str):
     cmap = plt.cm.viridis(np.linspace(0.1, 0.9, len(thresholds)))
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-    fig.suptitle(f'EE-ViT-B/16  —  Latency Distribution by Threshold  (N={N}회)', fontsize=13)
+    fig.suptitle(f'EE-ViT-B/16  —  Latency Distribution by Threshold  (N={N} runs)', fontsize=13)
 
     # ── KDE overlay ──────────────────────────────────────────────────────────
     ax = axes[0]

@@ -563,7 +563,7 @@ def plot_grid_best_heatmap(all_grid_runs: list, save_path: str):
     ax.set_yticklabels([str(b) for b in all_bs])
     ax.set_xlabel('Timeout (ms)')
     ax.set_ylabel('Batch Size')
-    ax.set_title(f'Grid Best Selection Frequency (%)  —  N={n_total}회')
+    ax.set_title(f'Grid Best Selection Frequency (%)  —  N={n_total} runs')
 
     # 셀마다 수치 표시
     for r in range(len(all_bs)):
@@ -575,7 +575,7 @@ def plot_grid_best_heatmap(all_grid_runs: list, save_path: str):
                         fontsize=9, color='black' if val < 60 else 'white',
                         fontweight='bold')
 
-    plt.colorbar(im, ax=ax, label='선택 빈도 (%)')
+    plt.colorbar(im, ax=ax, label='Selection Freq. (%)')
     plt.tight_layout()
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -626,7 +626,7 @@ def plot_benchmark_results(all_runs: list, threshold: float, save_path: str):
     n_models = len(models)
     n_cols = max(4, n_models)
     fig, axes = plt.subplots(2, n_cols, figsize=(5 * n_cols, 10))
-    fig.suptitle(f'6-Way Benchmark  (threshold={threshold}, N={n_runs}회)', fontsize=13)
+    fig.suptitle(f'6-Way Benchmark  (threshold={threshold}, N={n_runs} runs)', fontsize=13)
 
     x = np.arange(n_models)
     col_colors = [colors[i % len(colors)] for i in range(n_models)]
@@ -730,7 +730,7 @@ def plot_kde_overlay_large(all_runs: list, threshold: float, save_path: str):
 
     fig, ax = plt.subplots(figsize=(12, 6))
     fig.suptitle(
-        f'Latency Distribution — All Models  (threshold={threshold}, N={n_runs}회)',
+        f'Latency Distribution — All Models  (threshold={threshold}, N={n_runs} runs)',
         fontsize=14
     )
 
