@@ -39,6 +39,10 @@ import sys
 import argparse
 from datetime import datetime
 
+# HuggingFace 캐시 경로 (공유 캐시 권한 오류 방지) — timm import 전에 설정
+os.environ.setdefault('HF_HOME', '/home/cap10/.cache/huggingface')
+os.makedirs(os.environ['HF_HOME'], exist_ok=True)
+
 import numpy as np
 import torch
 
