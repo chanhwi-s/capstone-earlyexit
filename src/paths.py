@@ -7,46 +7,36 @@
   experiments/
   └── exp_YYYYMMDD_HHMMSS/        ← 실험마다 독립된 디렉토리 (EXP_DIR)
       ├── train/
-      │   ├── ee_resnet18/
+      │   ├── ee_vit_2exit/
       │   │   ├── checkpoints/ (best.pth, final.pth)
       │   │   ├── config.yaml
       │   │   ├── train_log.csv
       │   │   └── training_curves.png
-      │   ├── plain_resnet18/
-      │   └── vee_resnet18/
+      │   ├── ee_vit_3exit/
+      │   └── plain_vit/
       ├── onnx/
-      │   ├── ee_resnet18/   (seg1.onnx, seg2.onnx, seg3.onnx, full.onnx)
-      │   ├── plain_resnet18/ (plain_resnet18.onnx)
-      │   └── vee_resnet18/  (vee_seg1.onnx, vee_seg2.onnx, full.onnx)
+      │   ├── ee_vit_2exit/  (seg1.onnx, seg2.onnx)
+      │   ├── ee_vit_3exit/  (seg1.onnx, seg2.onnx, seg3.onnx)
+      │   └── plain_vit/     (plain_vit.onnx)
       ├── trt_engines/
-      │   ├── ee_resnet18/   (seg1.engine, seg2.engine, seg3.engine)
-      │   ├── plain_resnet18/ (plain_resnet18.engine)
-      │   └── vee_resnet18/  (vee_seg1.engine, vee_seg2.engine)
-      ├── engine_inspect/           ← 엔진이 동일하면 불변 → eval 밖에 저장
-      │   ├── Plain_ResNet-18.json
-      │   ├── EE_Seg1_....json
-      │   └── ...
+      │   ├── ee_vit_2exit/  (seg1.engine, seg2.engine)
+      │   ├── ee_vit_3exit/  (seg1.engine, seg2.engine, seg3.engine)
+      │   └── plain_vit/     (plain_vit.engine)
       └── eval/
-          ├── exit_rate/            ← eval_dir() — 모델 기반, 런 타임스탬프 불필요
-          ├── exit_samples/
-          ├── hard_sample_analysis/
           └── run_YYYYMMDD_HHMMSS/  ← run_eval_dir() — 실행마다 독립된 결과
-              ├── benchmark_comparison/
-              ├── hybrid_grid/
-              └── trt_sweep/
+              ├── vit_trt_sweep/
+              └── vit_trt_benchmark/
 
 ━━━ EXP_DIR 결정 우선순위 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   1. 환경변수 EXP_DIR 이 설정되어 있으면 그것을 사용
-     (train_pipeline.sh / orin_pipeline.sh 에서 export)
   2. 없으면 experiments/ 내 가장 최신 exp_* 디렉토리 자동 선택
-  3. exp_* 디렉토리가 아예 없으면 experiments/ 직접 사용 (하위 호환 fallback)
+  3. exp_* 디렉토리가 아예 없으면 experiments/ 직접 사용 (fallback)
 
 ━━━ RUN_TIMESTAMP 결정 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   run_eval_dir() 는 RUN_TIMESTAMP 환경변수를 사용해 실행별 하위 디렉토리 생성.
-  orin_pipeline.sh 에서 export RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S) 로 설정됨.
-  환경변수 없으면 모듈 임포트 시점의 시간을 자동 사용 (스크립트 직접 실행 시).
+  환경변수 없으면 모듈 임포트 시점의 시간을 자동 사용.
 """
 
 import os
