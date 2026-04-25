@@ -63,15 +63,13 @@ _build() {
         echo "  [SKIP] $label — ONNX 없음: $onnx_path"
         return
     fi
-    echo "  빌드: $label"
-    # trtexec는 외부 데이터(.onnx.data)가 ONNX와 같은 디렉토리에 있어야 함
+    echo "  빌드 시작: $label  (ViT-B/16은 5~15분 소요)"
+    # --iterations/--warmUp 제거: 엔진 빌드만 수행, trtexec 자체 벤치마크 스킵
     trtexec \
         --onnx="$onnx_path" \
         --saveEngine="$engine_path" \
-        --fp16 \
-        --iterations=100 --warmUp=500 --avgRuns=100 \
-        2>&1 | grep -E "^(&|=|\[|TRT-PERF|trtexec|Successfully)" | tail -5
-    echo "  → $engine_path"
+        --fp16
+    echo "  → 완료: $engine_path"
 }
 
 # ── PlainViT ────────────────────────────────────────────────────────────────
