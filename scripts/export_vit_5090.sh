@@ -35,7 +35,9 @@ SRC_DIR="$PROJECT_ROOT/src"
 MODEL="${1:-all}"   # 인자: all | plain | 2exit | 3exit
 
 # 서버 환경 설정 (5090 공유 서버)
-export HF_HOME="${HF_HOME:-/home/cap10/.cache/huggingface}"
+# 시스템 레벨 HF_HOME 이 /home/shared 등으로 설정되어 있을 수 있으므로 강제 override
+export HF_HOME="/home/cap10/.cache/huggingface"
+export HUGGINGFACE_HUB_CACHE="/home/cap10/.cache/huggingface/hub"
 
 echo "============================================"
 echo "  ViT ONNX Export (RTX 5090)"
