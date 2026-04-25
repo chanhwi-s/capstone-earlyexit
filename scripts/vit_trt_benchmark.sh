@@ -18,8 +18,9 @@
 #    N_SAMPLES=1000
 #    DATA_ROOT=<path>
 #    WARMUP=20
-#    SKIP_2EXIT=1    2-exit 건너뜀
-#    SKIP_3EXIT=1    3-exit 건너뜀
+#    SKIP_2EXIT=1        2-exit 건너뜀
+#    SKIP_3EXIT=1        3-exit 건너뜀
+#    LATENCY_ONLY=1      ImageNet 없을 때 랜덤 노이즈로 latency만 측정
 # ============================================================
 
 set -euo pipefail
@@ -43,10 +44,11 @@ echo "============================================"
 cd "$SRC_DIR"
 
 EXTRA_ARGS=()
-[[ -n "${DATA_ROOT:-}" ]] && EXTRA_ARGS+=(--data-root "$DATA_ROOT")
-[[ -n "${WARMUP:-}"    ]] && EXTRA_ARGS+=(--warmup "$WARMUP")
-[[ "${SKIP_2EXIT:-0}" == "1" ]] && EXTRA_ARGS+=(--skip-2exit)
-[[ "${SKIP_3EXIT:-0}" == "1" ]] && EXTRA_ARGS+=(--skip-3exit)
+[[ -n "${DATA_ROOT:-}"       ]] && EXTRA_ARGS+=(--data-root "$DATA_ROOT")
+[[ -n "${WARMUP:-}"          ]] && EXTRA_ARGS+=(--warmup "$WARMUP")
+[[ "${SKIP_2EXIT:-0}"   == "1" ]] && EXTRA_ARGS+=(--skip-2exit)
+[[ "${SKIP_3EXIT:-0}"   == "1" ]] && EXTRA_ARGS+=(--skip-3exit)
+[[ "${LATENCY_ONLY:-0}" == "1" ]] && EXTRA_ARGS+=(--latency-only)
 
 python benchmark/benchmark_trt_vit.py \
     --thr-2exit "$THR_2EXIT" \
