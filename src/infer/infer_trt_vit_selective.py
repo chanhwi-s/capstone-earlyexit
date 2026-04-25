@@ -31,7 +31,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths
-from infer.infer_trt import TRTEngine     # torch 기반 TRT 래퍼 재사용
+from infer.trt_engine import TRTEngine
 
 
 # ── SelectiveExitViT TRT Inference ───────────────────────────────────────────

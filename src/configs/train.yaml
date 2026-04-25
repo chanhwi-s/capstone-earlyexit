@@ -1,66 +1,32 @@
 dataset:
-  name: cifar10          # train 스크립트에서 --dataset 인자로 덮어쓰기 가능
-  data_root: ../data
-  num_workers: 2
+  name: imagenet
+  data_root: ../data    # data_root/imagenet/train, data_root/imagenet/val
+  num_workers: 8
 
 train:
-  batch_size: 128
-  epochs: 100
+  batch_size: 64
+  epochs: 30
   seed: 42
-  w1: 0.3
-  w2: 0.3
-  w3: 1.0
+  weight_mode: equal    # equal | linear (exit head loss weight mode)
 
 optimizer:
-  lr: 0.1
-  momentum: 0.9
-  weight_decay: 5e-4
+  lr: 1.0e-3
+  weight_decay: 0.05
 
-# CosineAnnealingLR: lr을 epochs에 걸쳐 eta_min까지 cosine 곡선으로 감소
 scheduler:
   type: cosine
-  T_max: 100      # epochs와 동일하게 설정
-  eta_min: 0.001  # 최솟값 lr
+  T_max: 30
+  eta_min: 1.0e-5
 
-model:
-  name: ee_resnet18
-
-# ── ImageNet 전용 하이퍼파라미터 프리셋 ──────────────────────────────────────────
-# train 스크립트에서 --dataset imagenet 지정 시 아래 값으로 자동 병합됨
-# 각 값은 --epochs, --batch-size, --lr 등 CLI 인자로 개별 오버라이드 가능
-imagenet:
-  data_root: ../data    # ImageNet 데이터 경로 (data_root/imagenet/train, data_root/imagenet/val 구조)
-  num_workers: 8
-  input_size: [224, 224]
-  train:
-    batch_size: 256
-    epochs: 90
-    seed: 42
-    w1: 0.3
-    w2: 0.3
-    w3: 1.0
-  optimizer:
-    lr: 0.1
-    momentum: 0.9
-    weight_decay: 1.0e-4  # CIFAR-10(5e-4)보다 낮게: ImageNet은 더 큰 모델/데이터
-  scheduler:
-    T_max: 90
-    eta_min: 1.0e-4
-
-# ── EE-ViT 전용 하이퍼파라미터 프리셋 ────────────────────────────────────────────
-# train/train_vit.py 에서 자동 병합됨.
-# backbone frozen 상태에서 exit head만 fine-tuning하므로
-# - optimizer: AdamW (SGD 대신)
-# - epochs: 30 (from-scratch 학습보다 훨씬 짧아도 충분)
-# - batch_size: 64 (ViT-B 메모리 고려)
+# ── SelectiveExitViT presets (merged by train_vit_selective.py) ───────────────
 vit:
-  data_root: ../data    # ImageNet 경로 (imagenet 프리셋과 동일 구조)
+  data_root: ../data
   num_workers: 8
   train:
     batch_size: 64
     epochs: 30
     seed: 42
-    weight_mode: equal  # equal | linear (exit head loss 가중치 모드)
+    weight_mode: equal
   optimizer:
     lr: 1.0e-3
     weight_decay: 0.05
