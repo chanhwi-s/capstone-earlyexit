@@ -169,7 +169,7 @@ def save_results_csv(results: dict, out_path: str):
 
 # ── 플롯 ─────────────────────────────────────────────────────────────────────
 
-def plot_latency(results: dict, N: int, out_path: str):
+def plot_latency(results: dict, N: int, out_path: str, device_label: str = "Jetson AGX Orin"):
     models  = list(results.keys())
     colors  = ['steelblue', 'darkorange', 'seagreen']
     metrics = ['avg_ms', 'p50_ms', 'p99_ms']
@@ -190,7 +190,7 @@ def plot_latency(results: dict, N: int, out_path: str):
     ax.set_xticks(x)
     ax.set_xticklabels(models, fontsize=10)
     ax.set_ylabel('Latency (ms)')
-    ax.set_title(f'TRT Latency Comparison  (N={N} runs, Jetson AGX Orin)', fontsize=12)
+    ax.set_title(f'TRT Latency Comparison  (N={N} runs, {device_label})', fontsize=12)
     ax.legend()
     ax.grid(axis='y', alpha=0.3)
     plt.tight_layout()
@@ -199,7 +199,7 @@ def plot_latency(results: dict, N: int, out_path: str):
     print(f"  latency bar chart saved: {out_path}")
 
 
-def plot_tradeoff(results: dict, out_path: str):
+def plot_tradeoff(results: dict, out_path: str, device_label: str = "Jetson AGX Orin"):
     fig, ax = plt.subplots(figsize=(8, 6))
     colors = {'PlainViT': 'steelblue', 'EE-ViT-2exit': 'darkorange', 'EE-ViT-3exit': 'seagreen'}
     markers = {'PlainViT': 'D', 'EE-ViT-2exit': 'o', 'EE-ViT-3exit': 's'}
@@ -217,7 +217,7 @@ def plot_tradeoff(results: dict, out_path: str):
 
     ax.set_xlabel('Avg Latency (ms)')
     ax.set_ylabel('Accuracy (%)')
-    ax.set_title('Accuracy vs Latency Tradeoff  (Jetson AGX Orin TRT)', fontsize=12)
+    ax.set_title(f'Accuracy vs Latency Tradeoff  ({device_label} TRT)', fontsize=12)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
     plt.tight_layout()
@@ -226,7 +226,7 @@ def plot_tradeoff(results: dict, out_path: str):
     print(f"  tradeoff plot saved: {out_path}")
 
 
-def plot_exit_rate(results: dict, out_path: str):
+def plot_exit_rate(results: dict, out_path: str, device_label: str = "Jetson AGX Orin"):
     ee_results = {k: r for k, r in results.items() if r['model'] != 'PlainViT'}
     if not ee_results:
         return
@@ -248,16 +248,16 @@ def plot_exit_rate(results: dict, out_path: str):
         ax.set_title(f"{r['model']}  (thr={r['threshold']:.2f})", fontsize=11)
         ax.grid(axis='y', alpha=0.3)
 
-    fig.suptitle('Exit Block Distribution  (Jetson AGX Orin TRT)', fontsize=12)
+    fig.suptitle(f'Exit Block Distribution  ({device_label} TRT)', fontsize=12)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  exit rate chart saved: {out_path}")
 
 
-def print_comparison_table(results: dict):
+def print_comparison_table(results: dict, device_label: str = "Jetson AGX Orin"):
     print(f"\n{'='*80}")
-    print(f"  TRT Benchmark — Jetson AGX Orin")
+    print(f"  TRT Benchmark — {device_label}")
     print(f"{'='*80}")
     header = f"  {'Model':<22} {'Thr':>6} {'Acc':>8} {'avg_ms':>8} {'p50_ms':>8} {'p99_ms':>8} {'AvgBlock':>10}"
     print(header)
@@ -291,6 +291,8 @@ def main():
     parser.add_argument('--num-workers',   type=int,   default=2)
     parser.add_argument('--warmup',        type=int,   default=20)
     parser.add_argument('--out-dir',       type=str,   default=None)
+    parser.add_argument('--device-label',  type=str,   default='Jetson AGX Orin',
+                        help='플롯/테이블 제목에 표시할 디바이스 이름')
     args = parser.parse_args()
 
     ts      = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -363,13 +365,14 @@ def main():
     save_results_json(results, os.path.join(out_dir, 'trt_benchmark_raw.json'))
     save_results_csv(results, os.path.join(out_dir, 'trt_benchmark_summary.csv'))
 
+    dl = args.device_label
     print("Generating plots ...")
-    plot_latency(results, args.n, os.path.join(out_dir, 'trt_benchmark_latency.png'))
+    plot_latency(results, args.n, os.path.join(out_dir, 'trt_benchmark_latency.png'), dl)
     if not latency_only:
-        plot_tradeoff(results, os.path.join(out_dir, 'trt_benchmark_tradeoff.png'))
-    plot_exit_rate(results, os.path.join(out_dir, 'trt_benchmark_exit_rate.png'))
+        plot_tradeoff(results, os.path.join(out_dir, 'trt_benchmark_tradeoff.png'), dl)
+    plot_exit_rate(results, os.path.join(out_dir, 'trt_benchmark_exit_rate.png'), dl)
 
-    print_comparison_table(results)
+    print_comparison_table(results, dl)
     print(f"Done! Results at:\n  {out_dir}")
 
 
