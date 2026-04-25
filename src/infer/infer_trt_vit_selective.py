@@ -4,10 +4,10 @@ TRT 추론 엔진 — SelectiveExitViT & PlainViT  (Jetson AGX Orin 전용)
 TRTEngine 은 infer_trt.py 에서 재사용 (torch 기반, pycuda-free).
 
 세그먼트 I/O 규칙:
-  seg1    : in="image"  → out="feat" + "ee_logits"
-  seg_mid : in="feat"   → out="feat" + "ee_logits"   (3-exit 중간 세그먼트)
-  seg_last: in="feat"   → out="ee_logits"
-  plain   : in="image"  → out="logits"
+  seg1    : in="image"    → out="feat_out" + "ee_logits"
+  seg_mid : in="feat_in"  → out="feat_out" + "ee_logits"   (3-exit 중간 세그먼트)
+  seg_last: in="feat_in"  → out="ee_logits"
+  plain   : in="image"    → out="logits"
 
 사용법:
   from infer.infer_trt_vit_selective import (
@@ -74,16 +74,16 @@ class SelectiveViTTRT:
             is_first = (i == 0)
             is_last  = (i == self.n_segs - 1)
 
-            # 입력 준비
-            inp = {"image": image} if is_first else {"feat": feat}
+            # 입력 준비 (seg1=image, 나머지=feat_in)
+            inp = {"image": image} if is_first else {"feat_in": feat}
 
             # TRT 실행
             out = seg.infer(inp)
 
-            # 출력 파싱
+            # 출력 파싱 (feat_out → 다음 세그먼트 입력, ee_logits → confidence 체크)
             logits = out["ee_logits"]
             if not is_last:
-                feat = out["feat"].cuda()   # 다음 세그먼트에 GPU 텐서 전달
+                feat = out["feat_out"].cuda()   # 다음 세그먼트에 GPU 텐서 전달
 
             # Confidence 체크
             conf = F.softmax(logits, dim=1).max(dim=1).values.item()

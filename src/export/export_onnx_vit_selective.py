@@ -1,36 +1,25 @@
 """
 SelectiveExitViT ONNX 세그먼트 Export (5090 실행)
 
-세그먼트 구조:
-  PlainViT:
-    in:  image [1, 3, 224, 224]
-    out: logits [1, 1000]
+세그먼트 I/O 명명 규칙 (ONNX 입출력 이름 충돌 방지):
+  seg1    : in="image"    → out=["feat_out", "ee_logits"]
+  seg_mid : in="feat_in"  → out=["feat_out", "ee_logits"]
+  seg_last: in="feat_in"  → out=["ee_logits"]
+  plain   : in="image"    → out=["logits"]
 
-  2-exit (exit_blocks=[8, 12]):
-    seg1: patch_embed + pos_embed + blocks[0:8]  + exit_heads[0]
-          in:  image [1, 3, 224, 224]
-          out: feat [1, 197, 768],  ee_logits [1, 1000]
-    seg2: blocks[8:12] + exit_heads[1]
-          in:  feat [1, 197, 768]
-          out: ee_logits [1, 1000]
-
-  3-exit (exit_blocks=[6, 9, 12]):
-    seg1: patch_embed + pos_embed + blocks[0:6]  + exit_heads[0]
-          in:  image [1, 3, 224, 224]
-          out: feat [1, 197, 768],  ee_logits [1, 1000]
-    seg2: blocks[6:9] + exit_heads[1]
-          in:  feat [1, 197, 768]
-          out: feat [1, 197, 768],  ee_logits [1, 1000]   (← 중간 세그먼트)
-    seg3: blocks[9:12] + exit_heads[2]
-          in:  feat [1, 197, 768]
-          out: ee_logits [1, 1000]
+  ※ input/output 동일 이름 사용 금지 (ONNX graph 유효성 검사 실패)
 
 사용법 (5090에서):
   cd src
   python export/export_onnx_vit_selective.py --model all
   python export/export_onnx_vit_selective.py --model plain
-  python export/export_onnx_vit_selective.py --model 2exit --checkpoint /path/to/best.pth
-  python export/export_onnx_vit_selective.py --model 3exit
+  python export/export_onnx_vit_selective.py --model 2exit --ckpt-2exit /path/to/best.pth
+  python export/export_onnx_vit_selective.py --model 3exit --ckpt-3exit /path/to/best.pth
+
+  # 두 모델이 다른 exp 디렉토리에 있을 때
+  python export/export_onnx_vit_selective.py --model all \\
+      --ckpt-2exit experiments/exp_20260414_212957/train/ee_vit_2exit/checkpoints/best.pth \\
+      --ckpt-3exit experiments/exp_20260414_213050/train/ee_vit_3exit/checkpoints/best.pth
 """
 
 import os
@@ -154,7 +143,7 @@ def export_selective_segs(model: SelectiveExitViT, device: torch.device,
     print(f"\n[{model_tag}] ONNX segment export ...")
     dummy_image = torch.randn(1, 3, 224, 224, device=device)
 
-    # ── seg1 ──
+    # ── seg1: in="image" → out=["feat_out", "ee_logits"] ──
     seg1 = ViTSeg1(model).to(device).eval()
     with torch.no_grad():
         feat_out, _ = seg1(dummy_image)
@@ -164,7 +153,7 @@ def export_selective_segs(model: SelectiveExitViT, device: torch.device,
         torch.onnx.export(
             seg1, dummy_image, path_seg1,
             input_names=["image"],
-            output_names=["feat", "ee_logits"],
+            output_names=["feat_out", "ee_logits"],   # "feat" ≠ input name → 충돌 없음
             opset_version=17, verbose=False,
         )
     print(f"  seg1 saved → {path_seg1}")
@@ -172,7 +161,7 @@ def export_selective_segs(model: SelectiveExitViT, device: torch.device,
 
     feat_cur = feat_out.detach()
 
-    # ── 중간 세그먼트 (3-exit 이상에서만 존재) ──
+    # ── 중간 세그먼트: in="feat_in" → out=["feat_out", "ee_logits"] (3-exit 이상) ──
     for seg_idx in range(1, n_exits - 1):
         seg_mid = ViTSegMid(model, seg_idx).to(device).eval()
         with torch.no_grad():
@@ -182,22 +171,22 @@ def export_selective_segs(model: SelectiveExitViT, device: torch.device,
         with torch.no_grad():
             torch.onnx.export(
                 seg_mid, feat_cur, path_mid,
-                input_names=["feat"],
-                output_names=["feat", "ee_logits"],
+                input_names=["feat_in"],               # 입력: feat_in
+                output_names=["feat_out", "ee_logits"],# 출력: feat_out (이름 충돌 없음)
                 opset_version=17, verbose=False,
             )
         print(f"  seg{seg_idx + 1} (mid) saved → {path_mid}")
         _verify(path_mid, 2)
         feat_cur = feat_next.detach()
 
-    # ── 마지막 세그먼트 ──
+    # ── 마지막 세그먼트: in="feat_in" → out=["ee_logits"] ──
     last_idx = n_exits - 1
     seg_last = ViTSegLast(model, last_idx).to(device).eval()
     path_last = os.path.join(out_dir, f"seg{n_exits}.onnx")
     with torch.no_grad():
         torch.onnx.export(
             seg_last, feat_cur, path_last,
-            input_names=["feat"],
+            input_names=["feat_in"],
             output_names=["ee_logits"],
             opset_version=17, verbose=False,
         )
@@ -218,6 +207,15 @@ def load_selective_model(exit_blocks: list, ckpt: str,
     return model.to(device)
 
 
+def find_checkpoint_any_exp(model_name: str, filename: str = "best.pth") -> str | None:
+    """모든 exp_* 디렉토리를 최신순으로 탐색해 체크포인트 반환."""
+    for exp_dir in reversed(paths.list_experiments()):
+        ckpt = os.path.join(exp_dir, "train", model_name, "checkpoints", filename)
+        if os.path.exists(ckpt):
+            return ckpt
+    return None
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -230,18 +228,30 @@ def main():
         help="export 대상 (기본: all)"
     )
     parser.add_argument("--ckpt-2exit", type=str, default=None,
-                        help="2-exit 체크포인트 경로 (기본: 최신 ee_vit_2exit/best.pth)")
+                        help="2-exit 체크포인트 경로 (다른 exp에 있을 때 직접 지정)")
     parser.add_argument("--ckpt-3exit", type=str, default=None,
-                        help="3-exit 체크포인트 경로 (기본: 최신 ee_vit_3exit/best.pth)")
+                        help="3-exit 체크포인트 경로 (다른 exp에 있을 때 직접 지정)")
     parser.add_argument("--exit-blocks-2", type=int, nargs="+", default=[8, 12],
                         help="2-exit 블록 번호 (기본: 8 12)")
     parser.add_argument("--exit-blocks-3", type=int, nargs="+", default=[6, 9, 12],
                         help="3-exit 블록 번호 (기본: 6 9 12)")
+    parser.add_argument("--out-exp", type=str, default=None,
+                        help="ONNX 저장 exp 디렉토리 (기본: 최신 exp_* 자동 선택)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     print(f"Export target: {args.model}\n")
+
+    # ONNX 출력 exp 디렉토리 — 명시하지 않으면 최신 exp (paths.EXPERIMENTS_DIR)
+    if args.out_exp:
+        out_exp = os.path.realpath(args.out_exp)
+        def _onnx_dir(model_name):
+            d = os.path.join(out_exp, "onnx", model_name)
+            os.makedirs(d, exist_ok=True)
+            return d
+    else:
+        _onnx_dir = paths.onnx_dir
 
     do_plain = args.model in ("plain", "all")
     do_2exit = args.model in ("2exit", "all")
@@ -249,40 +259,39 @@ def main():
 
     # ── PlainViT ──
     if do_plain:
-        out_dir = paths.onnx_dir("plain_vit")
-        export_plain_vit(device, out_dir)
+        export_plain_vit(device, _onnx_dir("plain_vit"))
 
     # ── 2-exit ──
     if do_2exit:
-        ckpt = args.ckpt_2exit or paths.latest_checkpoint("ee_vit_2exit", "best.pth")
+        # 명시 → 최신 exp → 전체 exp 탐색 순서로 체크포인트 결정
+        ckpt = (args.ckpt_2exit
+                or paths.latest_checkpoint("ee_vit_2exit", "best.pth")
+                or find_checkpoint_any_exp("ee_vit_2exit", "best.pth"))
         if ckpt is None or not os.path.exists(ckpt):
-            print(f"[ERROR] ee_vit_2exit 체크포인트 없음. --ckpt-2exit 로 지정하세요.")
-            if not do_3exit:
-                return
+            print("[ERROR] ee_vit_2exit 체크포인트 없음. --ckpt-2exit 로 지정하세요.")
+            print("  예) --ckpt-2exit experiments/exp_20260414_212957/train/ee_vit_2exit/checkpoints/best.pth")
         else:
             print(f"2-exit 체크포인트: {ckpt}")
             model = load_selective_model(args.exit_blocks_2, ckpt, device)
-            out_dir = paths.onnx_dir("ee_vit_2exit")
-            export_selective_segs(model, device, out_dir)
+            export_selective_segs(model, device, _onnx_dir("ee_vit_2exit"))
             del model
 
     # ── 3-exit ──
     if do_3exit:
-        ckpt = args.ckpt_3exit or paths.latest_checkpoint("ee_vit_3exit", "best.pth")
+        ckpt = (args.ckpt_3exit
+                or paths.latest_checkpoint("ee_vit_3exit", "best.pth")
+                or find_checkpoint_any_exp("ee_vit_3exit", "best.pth"))
         if ckpt is None or not os.path.exists(ckpt):
-            print(f"[ERROR] ee_vit_3exit 체크포인트 없음. --ckpt-3exit 로 지정하세요.")
-            return
-        print(f"3-exit 체크포인트: {ckpt}")
-        model = load_selective_model(args.exit_blocks_3, ckpt, device)
-        out_dir = paths.onnx_dir("ee_vit_3exit")
-        export_selective_segs(model, device, out_dir)
-        del model
+            print("[ERROR] ee_vit_3exit 체크포인트 없음. --ckpt-3exit 로 지정하세요.")
+            print("  예) --ckpt-3exit experiments/exp_20260414_213050/train/ee_vit_3exit/checkpoints/best.pth")
+        else:
+            print(f"3-exit 체크포인트: {ckpt}")
+            model = load_selective_model(args.exit_blocks_3, ckpt, device)
+            export_selective_segs(model, device, _onnx_dir("ee_vit_3exit"))
+            del model
 
-    print("\n============================")
-    print("  ONNX export 완료")
-    print(f"  저장 위치: {paths.EXPERIMENTS_DIR}/onnx/")
+    print(f"\n  ONNX export 완료  →  {paths.EXPERIMENTS_DIR}/onnx/")
     print("  다음 단계: Orin으로 전송 후 orin_vit_pipeline.sh 실행")
-    print("============================")
 
 
 if __name__ == "__main__":

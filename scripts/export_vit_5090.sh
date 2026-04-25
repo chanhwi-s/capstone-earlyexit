@@ -50,7 +50,9 @@ cd "$SRC_DIR"
 python export/export_onnx_vit_selective.py \
     --model "$MODEL" \
     ${EXIT_BLOCKS_2:+--exit-blocks-2 $EXIT_BLOCKS_2} \
-    ${EXIT_BLOCKS_3:+--exit-blocks-3 $EXIT_BLOCKS_3}
+    ${EXIT_BLOCKS_3:+--exit-blocks-3 $EXIT_BLOCKS_3} \
+    ${CKPT_2EXIT:+--ckpt-2exit "$CKPT_2EXIT"} \
+    ${CKPT_3EXIT:+--ckpt-3exit "$CKPT_3EXIT"}
 
 echo ""
 echo "============================================"
