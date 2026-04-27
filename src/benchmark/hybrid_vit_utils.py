@@ -5,9 +5,10 @@ precompute_seg1 / precompute_seg / measure_seg_lut / bench_plain 등
 2-exit / 3-exit 스크립트가 공유하는 핵심 함수 모음.
 
 핵심 시뮬레이션 아이디어:
-  1. Seg1을 모든 샘플에 대해 1회 실행, 결과(feature, conf, pred, 시간)를 캐시.
+  1. 단일 패스로 필요한 모든 segment를 실행하되 feature는 저장하지 않음.
+     conf / pred / seg1_time (스칼라)만 기록 → 메모리 ~1 MB (vs 피처 저장 시 ~30 GB).
   2. 각 segment의 batch latency를 batch_size별로 별도 측정 → LUT 구성.
-  3. Grid search는 캐시된 데이터 + LUT로 GPU 재실행 없이 순수 시뮬레이션.
+  3. Grid search는 캐시된 스칼라 + LUT로 GPU 재실행 없이 순수 시뮬레이션.
   4. timeout 조건: 큐에서 가장 오래된 샘플의 대기 시간(누적 GPU 시간 기준)이
      timeout_ms 이상이면 flush (batch_size 미충족 시에도 강제 flush).
 """
@@ -186,6 +187,154 @@ def bench_plain(model, loader: DataLoader, device, warmup: int = 200):
                 latencies.append(s.elapsed_time(e))
                 correct.append(int(logits.argmax(1).item() == lbl.item()))
     return latencies, correct
+
+
+# ── 메모리 효율적 단일 패스 Precompute ───────────────────────────────────────
+#
+# 피처([B,197,768])를 RAM에 저장하지 않고 conf/pred/timing 스칼라만 기록.
+# 50k 샘플 기준: 피처 저장 시 ~30 GB → 스칼라만 저장 시 ~1 MB.
+
+def precompute_all_2exit(model, loader: DataLoader, device,
+                          eb1: int, eb2: int, threshold: float,
+                          warmup: int = 200) -> dict:
+    """
+    2-exit 모델의 모든 샘플을 단일 패스로 프로파일링.
+
+    Seg1을 실행 → conf < threshold인 샘플만 즉시 Seg2 실행.
+    피처는 저장하지 않고 conf/pred/timing 스칼라만 기록.
+
+    Returns:
+      labels     [N]       int32
+      seg1_times [N]       float64  ms (Seg1 GPU 시간)
+      confs_s1   [N]       float32  max softmax at exit_head[0]
+      preds_s1   [N]       int32    argmax at exit_head[0]
+      confs_s2   [M]       float32  (M = ne1 count)
+      preds_s2   [M]       int32
+    """
+    model.eval()
+    labels_all, seg1_times_all, confs_s1_all, preds_s1_all = [], [], [], []
+    confs_s2_all, preds_s2_all = [], []
+
+    with torch.no_grad():
+        for i, (x, lbl) in enumerate(loader):
+            x = x.to(device, non_blocking=True)
+            s = torch.cuda.Event(enable_timing=True)
+            e = torch.cuda.Event(enable_timing=True)
+
+            s.record()
+            feat = model._embed(x)
+            for bi in range(eb1):
+                feat = model.blocks[bi](feat)
+            logits_s1 = model.exit_heads[0](feat)
+            e.record()
+            torch.cuda.synchronize()
+
+            if i < warmup:
+                continue
+
+            seg1_times_all.append(s.elapsed_time(e))
+            labels_all.append(lbl.item())
+            conf_s1 = F.softmax(logits_s1, dim=1).max(1).values.item()
+            confs_s1_all.append(conf_s1)
+            preds_s1_all.append(logits_s1.argmax(1).item())
+
+            if conf_s1 < threshold:
+                for bi in range(eb1, eb2):
+                    feat = model.blocks[bi](feat)
+                logits_s2 = model.exit_heads[1](feat)
+                torch.cuda.synchronize()
+                confs_s2_all.append(F.softmax(logits_s2, dim=1).max(1).values.item())
+                preds_s2_all.append(logits_s2.argmax(1).item())
+
+            n_done = i - warmup + 1
+            if n_done % 5000 == 0:
+                print(f"    {n_done:>6} / {len(loader) - warmup}")
+
+    return {
+        'labels':     np.array(labels_all,     dtype=np.int32),
+        'seg1_times': np.array(seg1_times_all, dtype=np.float64),
+        'confs_s1':   np.array(confs_s1_all,   dtype=np.float32),
+        'preds_s1':   np.array(preds_s1_all,   dtype=np.int32),
+        'confs_s2':   np.array(confs_s2_all,   dtype=np.float32),
+        'preds_s2':   np.array(preds_s2_all,   dtype=np.int32),
+    }
+
+
+def precompute_all_3exit(model, loader: DataLoader, device,
+                          eb1: int, eb2: int, eb3: int, threshold: float,
+                          warmup: int = 200) -> dict:
+    """
+    3-exit 모델의 모든 샘플을 단일 패스로 프로파일링.
+
+    Seg1 → conf < threshold → Seg2 → conf < threshold → Seg3 순으로 실행.
+    피처는 저장하지 않고 스칼라만 기록.
+
+    Returns:
+      labels     [N]        int32
+      seg1_times [N]        float64  ms (Seg1 GPU 시간)
+      confs_s1   [N]        float32
+      preds_s1   [N]        int32
+      confs_s2   [M]        float32  (M = ne1 count, Seg1 비탈출)
+      preds_s2   [M]        int32
+      preds_s3   [K]        int32    (K = ne2 count, Seg2도 비탈출)
+    """
+    model.eval()
+    labels_all, seg1_times_all, confs_s1_all, preds_s1_all = [], [], [], []
+    confs_s2_all, preds_s2_all = [], []
+    preds_s3_all = []
+
+    with torch.no_grad():
+        for i, (x, lbl) in enumerate(loader):
+            x = x.to(device, non_blocking=True)
+            s = torch.cuda.Event(enable_timing=True)
+            e = torch.cuda.Event(enable_timing=True)
+
+            s.record()
+            feat = model._embed(x)
+            for bi in range(eb1):
+                feat = model.blocks[bi](feat)
+            logits_s1 = model.exit_heads[0](feat)
+            e.record()
+            torch.cuda.synchronize()
+
+            if i < warmup:
+                continue
+
+            seg1_times_all.append(s.elapsed_time(e))
+            labels_all.append(lbl.item())
+            conf_s1 = F.softmax(logits_s1, dim=1).max(1).values.item()
+            confs_s1_all.append(conf_s1)
+            preds_s1_all.append(logits_s1.argmax(1).item())
+
+            if conf_s1 < threshold:
+                for bi in range(eb1, eb2):
+                    feat = model.blocks[bi](feat)
+                logits_s2 = model.exit_heads[1](feat)
+                torch.cuda.synchronize()
+                conf_s2 = F.softmax(logits_s2, dim=1).max(1).values.item()
+                confs_s2_all.append(conf_s2)
+                preds_s2_all.append(logits_s2.argmax(1).item())
+
+                if conf_s2 < threshold:
+                    for bi in range(eb2, eb3):
+                        feat = model.blocks[bi](feat)
+                    logits_s3 = model.exit_heads[2](feat)
+                    torch.cuda.synchronize()
+                    preds_s3_all.append(logits_s3.argmax(1).item())
+
+            n_done = i - warmup + 1
+            if n_done % 5000 == 0:
+                print(f"    {n_done:>6} / {len(loader) - warmup}")
+
+    return {
+        'labels':     np.array(labels_all,     dtype=np.int32),
+        'seg1_times': np.array(seg1_times_all, dtype=np.float64),
+        'confs_s1':   np.array(confs_s1_all,   dtype=np.float32),
+        'preds_s1':   np.array(preds_s1_all,   dtype=np.int32),
+        'confs_s2':   np.array(confs_s2_all,   dtype=np.float32),
+        'preds_s2':   np.array(preds_s2_all,   dtype=np.int32),
+        'preds_s3':   np.array(preds_s3_all,   dtype=np.int32),
+    }
 
 
 # ── 통계 ─────────────────────────────────────────────────────────────────────

@@ -59,7 +59,7 @@ import paths
 from models.plain_vit import build_model as build_plain
 from models.ee_vit_selective import build_model as build_selective
 from benchmark.hybrid_vit_utils import (
-    precompute_seg1, precompute_seg, measure_seg_lut,
+    precompute_all_2exit, measure_seg_lut,
     lut_lookup, bench_plain, lat_stats,
 )
 from benchmark.benchmark_pytorch_vit import build_val_loader, load_checkpoint
@@ -78,7 +78,7 @@ def simulate(precomp: dict, seg2_preds: np.ndarray, seg2_lut: dict,
       - 큐 flush 조건: len >= batch_size OR (oldest 대기 >= timeout_ms)
       - flush 시: seg2 LUT 레이턴시 추가, 응답 시간 기록
 
-    precomp:    precompute_seg1 결과
+    precomp:    precompute_all_2exit 결과 (confs/preds/seg1_times/labels)
     seg2_preds: 비탈출 샘플에 대한 seg2 예측 (threshold 기준 비탈출 순서)
     seg2_lut:   {batch_size: latency_ms}
     """
@@ -341,21 +341,23 @@ def main():
 
     loader = build_val_loader(args.data_root, args.num_workers)
 
-    # ── Step 1: Seg1 사전계산 ──
-    print(f"\n[Step 1] Seg1 precompute  ({len(loader):,} samples) ...")
-    precomp = precompute_seg1(model, loader, device, seg1_end=eb1, warmup=args.warmup)
-    print(f"  → {len(precomp['labels']):,} samples cached")
+    # ── Step 1: 단일 패스 사전계산 (피처 미저장, 스칼라만 ~1 MB) ──
+    print(f"\n[Step 1] Single-pass precompute  ({len(loader):,} samples) ...")
+    data    = precompute_all_2exit(model, loader, device, eb1, eb2,
+                                   args.threshold, args.warmup)
+    precomp = {
+        'confs':      data['confs_s1'],
+        'preds':      data['preds_s1'],
+        'seg1_times': data['seg1_times'],
+        'labels':     data['labels'],
+    }
+    seg2_preds = data['preds_s2']
+    N = len(precomp['labels'])
+    ne_count = int((precomp['confs'] < args.threshold).sum())
+    print(f"  → {N:,} samples  (non-exiters: {ne_count:,})")
 
-    # ── Step 2: Seg2 predictions (비탈출 샘플) ──
-    non_exit_mask = precomp['confs'] < args.threshold
-    print(f"\n[Step 2] Seg2 precompute  (non-exiters: {non_exit_mask.sum():,}) ...")
-    seg2_data  = precompute_seg(model, device,
-                                precomp['feats'][non_exit_mask],
-                                start_block=eb1, end_block=eb2, head_idx=1)
-    seg2_preds = seg2_data['preds']
-
-    # ── Step 3: Seg2 LUT 측정 ──
-    print(f"\n[Step 3] Seg2 latency LUT ...")
+    # ── Step 2: Seg2 LUT 측정 ──
+    print(f"\n[Step 2] Seg2 latency LUT ...")
     seg2_lut = measure_seg_lut(model, device,
                                 start_block=eb1, end_block=eb2, head_idx=1,
                                 batch_sizes=args.batch_sizes, n_reps=args.lut_reps)
@@ -363,7 +365,7 @@ def main():
     del model
     torch.cuda.empty_cache()
 
-    # ── Step 4: PlainViT 기준선 ──
+    # ── Step 3: PlainViT 기준선 ──
     plain_st = None
     if not args.skip_plain:
         print(f"\n[Step 4] PlainViT baseline ...")
@@ -381,7 +383,7 @@ def main():
         with open(os.path.join(out_dir, 'hybrid_2exit_plain.json'), 'w') as f:
             json.dump(plain_st, f, indent=2)
 
-    # ── Step 5: Grid Search ──
+    # ── Step 4: Grid Search ──
     print(f"\n[Step 5] Grid search  ({len(args.batch_sizes)*len(args.timeout_ms)} combos) ...")
     grid = run_grid(precomp, seg2_preds, seg2_lut, args.threshold,
                     args.batch_sizes, args.timeout_ms, eb1, eb2)
