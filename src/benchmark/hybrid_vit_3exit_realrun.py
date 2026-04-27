@@ -323,31 +323,95 @@ def _grid_mat(results, batch_sizes, timeout_ms_list, metric):
 def plot_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
                  metric, metric_label, out_path, device_label, variant_label,
                  higher_better=False, raw_fmt='.2f', raw_unit='ms'):
+    import matplotlib.colors as mcolors
     mat_raw = _grid_mat(results, batch_sizes, timeout_ms_list, metric)
     mat = ((mat_raw - plain_val) / abs(plain_val) * 100 if higher_better
            else (plain_val - mat_raw) / plain_val * 100)
-    fig, ax = plt.subplots(figsize=(max(6, len(timeout_ms_list) + 1),
-                                    max(4, len(batch_sizes) + 1)))
-    im = ax.imshow(mat, cmap='RdYlGn', aspect='auto',
-                   vmin=min(-5, np.nanmin(mat)), vmax=max(5, np.nanmax(mat)))
-    plt.colorbar(im, ax=ax, label='Improvement over PlainViT (%)')
+
+    vmin_v = min(-15, np.nanmin(mat))
+    vmax_v = max(15, np.nanmax(mat))
+    norm = mcolors.TwoSlopeNorm(vmin=vmin_v, vcenter=0, vmax=vmax_v)
+    cmap = plt.get_cmap('RdYlGn')
+
+    fig, ax = plt.subplots(figsize=(max(6, len(timeout_ms_list) * 1.4 + 1),
+                                    max(4, len(batch_sizes) * 0.9 + 1)))
+    im = ax.imshow(mat, cmap=cmap, norm=norm, aspect='auto')
+    cb = plt.colorbar(im, ax=ax, label='Improvement over PlainViT (%)')
+    cb.ax.tick_params(labelsize=9)
     ax.set_xticks(range(len(timeout_ms_list)))
-    ax.set_xticklabels([f'{t}ms' for t in timeout_ms_list])
+    ax.set_xticklabels([f'{t}ms' for t in timeout_ms_list], fontsize=10)
     ax.set_yticks(range(len(batch_sizes)))
-    ax.set_yticklabels([f'bs={b}' for b in batch_sizes])
-    ax.set_xlabel('Timeout'); ax.set_ylabel('Batch Size')
+    ax.set_yticklabels([f'bs={b}' for b in batch_sizes], fontsize=10)
+    ax.set_xlabel('Timeout', fontsize=11); ax.set_ylabel('Batch Size', fontsize=11)
     ax.set_title(f'{metric_label} Improvement — Variant {variant_label} (real)\n'
-                 f'(thr={results[0]["threshold"]:.2f}, {device_label})')
+                 f'(thr={results[0]["threshold"]:.2f}, {device_label})', fontsize=11)
     for bi in range(len(batch_sizes)):
         for ti in range(len(timeout_ms_list)):
             v, raw = mat[bi, ti], mat_raw[bi, ti]
             if not np.isnan(v):
+                rgba = cmap(norm(v))
+                lum = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
+                tc = 'black' if lum > 0.45 else 'white'
                 ax.text(ti, bi, f'{v:+.1f}%\n({raw:{raw_fmt}}{raw_unit})',
-                        ha='center', va='center', fontsize=7,
-                        color='black' if abs(v) < 15 else 'white')
+                        ha='center', va='center', fontsize=7.5,
+                        color=tc, fontweight='bold')
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight'); plt.close()
     print(f"  heatmap: {out_path}")
+
+
+def plot_line_charts(all_grids, plain_st, batch_sizes, timeout_ms_list,
+                     out_dir, device_label, threshold):
+    """
+    variant별 1×3 figure = 총 9개 subplot.
+    x=batch_size, y=avg_ms/p99_ms/avg_tput, lines=timeout.
+    """
+    tab10 = plt.get_cmap('tab10')
+    colors = [tab10(i) for i in range(len(timeout_ms_list))]
+    markers = ['o', 's', '^', 'D', 'v']
+
+    metrics_cfg = [
+        ('avg_ms',   'Avg Latency (ms)'),
+        ('p99_ms',   'P99 Latency (ms)'),
+        ('avg_tput', 'Avg Throughput (samples/ms)'),
+    ]
+
+    for vkey, results in all_grids.items():
+        fig, axes = plt.subplots(1, 3, figsize=(17, 5))
+        fig.suptitle(f'Variant {vkey} — Batch Size vs Metrics'
+                     f'  (thr={threshold:.2f}, {device_label})', fontsize=13)
+
+        for ax, (metric, ylabel) in zip(axes, metrics_cfg):
+            for ci, tms in enumerate(timeout_ms_list):
+                subset = sorted([r for r in results if r['timeout_ms'] == tms],
+                                key=lambda r: r['batch_size'])
+                bszs = [r['batch_size'] for r in subset]
+                vals = [r[metric] for r in subset]
+                ax.plot(bszs, vals,
+                        marker=markers[ci % len(markers)],
+                        color=colors[ci],
+                        label=f'{tms}ms',
+                        linewidth=2, markersize=7, markeredgewidth=0.5,
+                        markeredgecolor='white')
+
+            if plain_st and metric in plain_st:
+                ax.axhline(plain_st[metric], color='#222222', linestyle='--',
+                           linewidth=1.8, label='PlainViT', alpha=0.85)
+
+            ax.set_xlabel('Batch Size', fontsize=10)
+            ax.set_ylabel(ylabel, fontsize=10)
+            ax.set_xticks(batch_sizes)
+            ax.legend(title='Timeout', fontsize=8, title_fontsize=9,
+                      framealpha=0.9, edgecolor='#cccccc')
+            ax.grid(alpha=0.25, linestyle='--', color='gray')
+            ax.set_facecolor('#f9f9f9')
+            ax.set_title(ylabel.split('(')[0].strip(), fontsize=11)
+
+        plt.tight_layout()
+        out_path = os.path.join(out_dir, f'hybrid_3exit_{vkey}_realrun_lineplot.png')
+        plt.savefig(out_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  lineplot ({vkey}): {out_path}")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -446,6 +510,7 @@ def main():
     # ── Grid Search ──
     dl = args.device_label
     bests = {}
+    all_grids = {}
 
     for vkey in args.variants:
         if vkey not in VARIANT_FNS:
@@ -453,6 +518,7 @@ def main():
 
         grid = run_grid(model, eval_samples, device, vkey, args.threshold,
                         args.batch_sizes, args.timeout_ms, eb1, eb2, eb3)
+        all_grids[vkey] = grid
 
         vlabel = {'A': 'A_single_batch', 'B': 'B_last_only', 'C': 'C_cascade'}[vkey]
         save_csv(grid, os.path.join(out_dir, f'hybrid_3exit_{vlabel}_realrun.csv'))
@@ -462,6 +528,8 @@ def main():
         if plain_st:
             for metric, label, hb, rfmt, runit in [
                 ('avg_ms',   'Avg Latency',     False, '.2f',  'ms'),
+                ('p90_ms',   'P90 Latency',     False, '.2f',  'ms'),
+                ('p95_ms',   'P95 Latency',     False, '.2f',  'ms'),
                 ('p99_ms',   'P99 Latency',     False, '.2f',  'ms'),
                 ('avg_tput', 'Avg Throughput',  True,  '.4f',  '/ms'),
                 ('p99_tput', 'P99 Throughput',  True,  '.4f',  '/ms'),
@@ -477,6 +545,11 @@ def main():
         print(f"\n  Variant {vkey} Best: bs={best['batch_size']} tms={best['timeout_ms']}ms  "
               f"avg={best['avg_ms']:.2f}ms  p99={best['p99_ms']:.2f}ms  "
               f"acc={best['accuracy_pct']:.2f}%")
+
+    # ── Line plots (variant별 9개 subplot) ──
+    if plain_st and all_grids:
+        plot_line_charts(all_grids, plain_st, args.batch_sizes, args.timeout_ms,
+                         out_dir, dl, args.threshold)
 
     print(f"\nDone! → {out_dir}")
 
