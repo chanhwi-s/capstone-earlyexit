@@ -132,10 +132,10 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         seg3_batch_starts = []  # 해당 샘플들의 seg1 시작 시각
 
         for k, pos in enumerate(q_ne1_pos):
-            if confs_s2[pos] >= threshold:  # Seg2에서 탈출
+            if confs_s2[pos] >= threshold:  # Seg2에서 탈출 (bs_q개 배치로 처리됨)
                 rt = t - q_t_s1_start[k]
                 response_times.append(rt)
-                throughputs.append(1.0 / rt)
+                throughputs.append(bs_q / rt)
                 exit_at.append(eb2)
                 orig_idx = int(ne1_idxs[pos])
                 correct.append(int(preds_s2[pos] == labels[orig_idx]))
@@ -150,7 +150,7 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
             for k, pos in enumerate(seg3_batch_pos):
                 rt = t - seg3_batch_starts[k]
                 response_times.append(rt)
-                throughputs.append(1.0 / rt)
+                throughputs.append(n_seg3 / rt)   # Seg3 실제 배치 크기
                 exit_at.append(eb3)
                 orig_idx = int(ne1_idxs[pos])
                 s3_pred  = seg3_pred_map.get(pos, -1)
@@ -256,7 +256,7 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         for k, pos in enumerate(q_ne1_pos):
             rt = t - q_t_s1_start[k]
             response_times.append(rt)
-            throughputs.append(1.0 / rt)
+            throughputs.append(bs_q / rt)   # Seg3 실제 배치 크기
             exit_at.append(eb3)
             orig_idx = int(ne1_idxs[pos])
             s3_pred  = seg3_pred_map.get(pos, -1)
@@ -376,7 +376,7 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         for k, pos in enumerate(q2_ne1_pos):
             rt = t - q2_t_start[k]
             response_times.append(rt)
-            throughputs.append(1.0 / rt)
+            throughputs.append(bs_q / rt)   # Seg3 실제 배치 크기
             exit_at.append(eb3)
             orig_idx = int(ne1_idxs[pos])
             s3_pred  = seg3_pred_map.get(pos, -1)
@@ -398,7 +398,7 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
             if confs_s2[pos] >= threshold:
                 rt = t - q1_t_start[k]
                 response_times.append(rt)
-                throughputs.append(1.0 / rt)
+                throughputs.append(bs_q / rt)   # Seg2 실제 배치 크기
                 exit_at.append(eb2)
                 correct.append(int(preds_s2[pos] == labels[orig_idx]))
             else:

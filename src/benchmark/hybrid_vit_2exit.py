@@ -115,7 +115,7 @@ def simulate(precomp: dict, seg2_preds: np.ndarray, seg2_lut: dict,
         for k in range(bs):
             rt = t - q_t_s1_start[k]
             response_times.append(rt)
-            throughputs.append(1.0 / rt)   # 1/응답시간 = end-to-end throughput
+            throughputs.append(bs / rt)    # B/response_time: 실제 배치 크기 반영
             exit_at.append(exit_block_2)
             sidx = q_idxs[k]
             correct.append(int(seg2_pred_map[sidx] == labels[sidx]))
