@@ -356,18 +356,20 @@ def throughput_stats(throughputs) -> dict:
     per-sample 유효 처리량(samples/ms) 통계.
 
     per-sample throughput = B / response_time
-      - early exit (bs=1):     1 / response_time  (B=1)
-      - batched seg (bs=B):    B / response_time  (실제 flush된 배치 크기)
-    PlainViT baseline는 항상 B=1 → 1/lat 와 동일 기준으로 비교 가능.
-    배치가 클수록 latency 악화에도 throughput이 올라갈 수 있음 (batching의 핵심).
-    overall_tput(N/총시뮬시간)은 시스템 레벨 지표로 별도 반환.
+      - early exit (bs=1):  1 / response_time  (B=1)
+      - batched (bs=B):     B / response_time
+
+    throughput은 높을수록 좋으므로 worst-case는 낮은 백분위수:
+      p90_tput = 10th percentile  (하위 10% 경계, latency p90의 worst-case와 대응)
+      p95_tput =  5th percentile
+      p99_tput =  1st percentile  (하위  1% 경계, latency p99의 worst-case와 대응)
     """
     tp = np.array(throughputs, dtype=np.float64)
     return {
         'avg_tput': float(np.mean(tp)),
         'p50_tput': float(np.percentile(tp, 50)),
-        'p90_tput': float(np.percentile(tp, 90)),
-        'p95_tput': float(np.percentile(tp, 95)),
-        'p99_tput': float(np.percentile(tp, 99)),
+        'p90_tput': float(np.percentile(tp, 10)),   # worst 10%
+        'p95_tput': float(np.percentile(tp,  5)),   # worst  5%
+        'p99_tput': float(np.percentile(tp,  1)),   # worst  1%
         'std_tput': float(np.std(tp)),
     }
