@@ -72,7 +72,7 @@ from models.plain_vit import build_model as build_plain
 from models.ee_vit_selective import build_model as build_selective
 from benchmark.hybrid_vit_utils import (
     precompute_all_3exit, measure_seg_lut,
-    lut_lookup, bench_plain, lat_stats,
+    lut_lookup, bench_plain, lat_stats, throughput_stats,
 )
 from benchmark.benchmark_pytorch_vit import build_val_loader, load_checkpoint
 
@@ -109,6 +109,7 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         seg3_pred_map[int(pos)] = int(seg3_preds_of_s2_nonexit[k])
 
     response_times = []
+    throughputs    = []  # per-sample 유효 처리량 (samples/ms)
     exit_at        = []
     correct        = []
 
@@ -122,8 +123,10 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         nonlocal t
         if not q_ne1_pos:
             return
-        bs_q   = len(q_ne1_pos)
-        t     += lut_lookup(seg2_lut, bs_q)  # Seg2 batch
+        bs_q    = len(q_ne1_pos)
+        seg2_ms = lut_lookup(seg2_lut, bs_q)
+        t      += seg2_ms
+        seg2_tput = bs_q / seg2_ms  # Seg2 배치 처리량
 
         # Seg2 판단 → exit or 즉시 Seg3
         seg3_batch_pos    = []  # ne1 내 위치 (Seg3 입력)
@@ -132,6 +135,7 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         for k, pos in enumerate(q_ne1_pos):
             if confs_s2[pos] >= threshold:  # Seg2에서 탈출
                 response_times.append(t - q_t_s1_start[k])
+                throughputs.append(seg2_tput)
                 exit_at.append(eb2)
                 orig_idx = int(ne1_idxs[pos])
                 correct.append(int(preds_s2[pos] == labels[orig_idx]))
@@ -140,9 +144,13 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
                 seg3_batch_starts.append(q_t_s1_start[k])
 
         if seg3_batch_pos:
-            t += lut_lookup(seg3_lut, len(seg3_batch_pos))  # Seg3 batch (즉시)
+            n_seg3   = len(seg3_batch_pos)
+            seg3_ms  = lut_lookup(seg3_lut, n_seg3)
+            t       += seg3_ms
+            seg3_tput = n_seg3 / seg3_ms
             for k, pos in enumerate(seg3_batch_pos):
                 response_times.append(t - seg3_batch_starts[k])
+                throughputs.append(seg3_tput)
                 exit_at.append(eb3)
                 orig_idx = int(ne1_idxs[pos])
                 s3_pred  = seg3_pred_map.get(pos, -1)
@@ -160,6 +168,7 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
 
         if confs_s1[i] >= threshold:
             response_times.append(seg1_times[i])
+            throughputs.append(1.0 / seg1_times[i])
             exit_at.append(eb1)
             correct.append(int(preds_s1[i] == labels[i]))
         else:
@@ -175,6 +184,7 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
 
     flush()
 
+    total_sim_time = t
     n       = len(response_times)
     n_e1    = sum(1 for b in exit_at if b == eb1)
     n_e2    = sum(1 for b in exit_at if b == eb2)
@@ -189,7 +199,9 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         'exit_rate_b2':    n_e2 / n * 100,
         'exit_rate_b3':    (n - n_e1 - n_e2) / n * 100,
         'n_samples':       n,
+        'overall_tput':    n / total_sim_time,
         **lat_stats(response_times),
+        **throughput_stats(throughputs),
     }
 
 
@@ -220,8 +232,10 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
                      for k, p in enumerate(ne2_pos)}
 
     seg2_single_ms = lut_lookup(seg2_lut, 1)
+    seg2_single_tput = 1.0 / seg2_single_ms  # bs=1 처리량
 
     response_times = []
+    throughputs    = []  # per-sample 유효 처리량 (samples/ms)
     exit_at        = []
     correct        = []
 
@@ -236,10 +250,13 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         nonlocal t
         if not q_ne1_pos:
             return
-        bs_q = len(q_ne1_pos)
-        t   += lut_lookup(seg3_lut, bs_q)
+        bs_q    = len(q_ne1_pos)
+        seg3_ms = lut_lookup(seg3_lut, bs_q)
+        t      += seg3_ms
+        seg3_tput = bs_q / seg3_ms
         for k, pos in enumerate(q_ne1_pos):
             response_times.append(t - q_t_s1_start[k])
+            throughputs.append(seg3_tput)
             exit_at.append(eb3)
             orig_idx = int(ne1_idxs[pos])
             s3_pred  = seg3_pred_map.get(pos, -1)
@@ -254,6 +271,7 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
 
         if confs_s1[i] >= threshold:
             response_times.append(t - t_start)
+            throughputs.append(1.0 / seg1_times[i])
             exit_at.append(eb1)
             correct.append(int(preds_s1[i] == labels[i]))
         else:
@@ -263,6 +281,7 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
             t += seg2_single_ms
             if confs_s2[pos] >= threshold:
                 response_times.append(t - t_start)
+                throughputs.append(seg2_single_tput)
                 exit_at.append(eb2)
                 orig_idx = int(ne1_idxs[pos])
                 correct.append(int(preds_s2[pos] == labels[orig_idx]))
@@ -278,6 +297,7 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
 
     flush_seg3()
 
+    total_sim_time = t
     n    = len(response_times)
     n_e1 = sum(1 for b in exit_at if b == eb1)
     n_e2 = sum(1 for b in exit_at if b == eb2)
@@ -292,7 +312,9 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         'exit_rate_b2': n_e2 / n * 100,
         'exit_rate_b3': (n - n_e1 - n_e2) / n * 100,
         'n_samples':    n,
+        'overall_tput': n / total_sim_time,
         **lat_stats(response_times),
+        **throughput_stats(throughputs),
     }
 
 
@@ -325,6 +347,7 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
                      for k, p in enumerate(ne2_pos)}
 
     response_times = []
+    throughputs    = []  # per-sample 유효 처리량 (samples/ms)
     exit_at        = []
     correct        = []
 
@@ -345,10 +368,13 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         nonlocal t
         if not q2_ne1_pos:
             return
-        bs_q = len(q2_ne1_pos)
-        t   += lut_lookup(seg3_lut, bs_q)
+        bs_q    = len(q2_ne1_pos)
+        seg3_ms = lut_lookup(seg3_lut, bs_q)
+        t      += seg3_ms
+        seg3_tput = bs_q / seg3_ms
         for k, pos in enumerate(q2_ne1_pos):
             response_times.append(t - q2_t_start[k])
+            throughputs.append(seg3_tput)
             exit_at.append(eb3)
             orig_idx = int(ne1_idxs[pos])
             s3_pred  = seg3_pred_map.get(pos, -1)
@@ -361,17 +387,20 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         nonlocal t
         if not q1_ne1_pos:
             return
-        bs_q = len(q1_ne1_pos)
-        t   += lut_lookup(seg2_lut, bs_q)  # Seg2 batch
+        bs_q    = len(q1_ne1_pos)
+        seg2_ms = lut_lookup(seg2_lut, bs_q)
+        t      += seg2_ms
+        seg2_tput = bs_q / seg2_ms
 
         for k, pos in enumerate(q1_ne1_pos):
             orig_idx = int(ne1_idxs[pos])
             if confs_s2[pos] >= threshold:
                 response_times.append(t - q1_t_start[k])
+                throughputs.append(seg2_tput)
                 exit_at.append(eb2)
                 correct.append(int(preds_s2[pos] == labels[orig_idx]))
             else:
-                # 큐2 적재
+                # 큐2 적재 (throughput은 flush_q2에서 할당)
                 q2_t_start.append(q1_t_start[k])
                 q2_t_entry.append(t)
                 q2_ne1_pos.append(pos)
@@ -392,6 +421,7 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
 
         if confs_s1[i] >= threshold:
             response_times.append(t - t_start)
+            throughputs.append(1.0 / seg1_times[i])
             exit_at.append(eb1)
             correct.append(int(preds_s1[i] == labels[i]))
         else:
@@ -415,6 +445,7 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
     flush_q1()
     flush_q2()
 
+    total_sim_time = t
     n    = len(response_times)
     n_e1 = sum(1 for b in exit_at if b == eb1)
     n_e2 = sum(1 for b in exit_at if b == eb2)
@@ -429,7 +460,9 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         'exit_rate_b2': n_e2 / n * 100,
         'exit_rate_b3': (n - n_e1 - n_e2) / n * 100,
         'n_samples':    n,
+        'overall_tput': n / total_sim_time,
         **lat_stats(response_times),
+        **throughput_stats(throughputs),
     }
 
 
@@ -460,7 +493,10 @@ def run_grid(sim_fn, label, precomp, seg2_data, seg3_preds,
 def save_csv(rows, path):
     fields = ['variant', 'batch_size', 'timeout_ms', 'threshold', 'accuracy_pct',
               'exit_rate_b1', 'exit_rate_b2', 'exit_rate_b3',
-              'avg_ms', 'p50_ms', 'p90_ms', 'p95_ms', 'p99_ms', 'std_ms', 'n_samples']
+              'avg_ms', 'p50_ms', 'p90_ms', 'p95_ms', 'p99_ms', 'std_ms',
+              'overall_tput',
+              'avg_tput', 'p50_tput', 'p90_tput', 'p95_tput', 'p99_tput', 'std_tput',
+              'n_samples']
     with open(path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
         w.writeheader()
@@ -480,9 +516,13 @@ def _grid_mat(results, batch_sizes, timeout_ms_list, metric):
 
 
 def plot_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
-                 metric, metric_label, out_path, device_label, variant_label):
+                 metric, metric_label, out_path, device_label, variant_label,
+                 higher_better=False, raw_fmt='.2f', raw_unit='ms'):
     mat_raw = _grid_mat(results, batch_sizes, timeout_ms_list, metric)
-    mat     = (plain_val - mat_raw) / plain_val * 100   # improvement %
+    if higher_better:
+        mat = (mat_raw - plain_val) / abs(plain_val) * 100
+    else:
+        mat = (plain_val - mat_raw) / plain_val * 100
 
     fig, ax = plt.subplots(figsize=(max(6, len(timeout_ms_list) + 1),
                                     max(4, len(batch_sizes) + 1)))
@@ -502,7 +542,7 @@ def plot_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
             v = mat[bi, ti]
             raw = mat_raw[bi, ti]
             if not np.isnan(v):
-                ax.text(ti, bi, f'{v:+.1f}%\n({raw:.2f}ms)',
+                ax.text(ti, bi, f'{v:+.1f}%\n({raw:{raw_fmt}}{raw_unit})',
                         ha='center', va='center', fontsize=7,
                         color='black' if abs(v) < 15 else 'white')
     plt.tight_layout()
@@ -659,18 +699,22 @@ def main():
     # ── Step 3: PlainViT 기준선 ──
     plain_st = None
     if not args.skip_plain:
-        print(f"\n[Step 5] PlainViT baseline ...")
+        print(f"\n[Step 3] PlainViT baseline ...")
         plain_model = build_plain().to(device)
         plain_lats, plain_correct = bench_plain(plain_model, loader, device, args.warmup)
         del plain_model
         torch.cuda.empty_cache()
+        plain_throughputs = [1.0 / l for l in plain_lats]
         plain_st = {
             'accuracy':     sum(plain_correct) / len(plain_correct),
             'accuracy_pct': sum(plain_correct) / len(plain_correct) * 100,
+            'overall_tput': len(plain_lats) / sum(plain_lats),
             **lat_stats(plain_lats),
+            **throughput_stats(plain_throughputs),
         }
         print(f"  PlainViT: acc={plain_st['accuracy_pct']:.2f}%  "
-              f"avg={plain_st['avg_ms']:.2f}ms  p99={plain_st['p99_ms']:.2f}ms")
+              f"avg={plain_st['avg_ms']:.2f}ms  p99={plain_st['p99_ms']:.2f}ms  "
+              f"avg_tput={plain_st['avg_tput']:.4f}/ms")
         with open(os.path.join(out_dir, 'hybrid_3exit_plain.json'), 'w') as f:
             json.dump(plain_st, f, indent=2)
 
@@ -703,6 +747,14 @@ def main():
                          'p99_ms', 'P99 Latency',
                          os.path.join(out_dir, f'hybrid_3exit_{vkey}_grid_p99_heatmap.png'),
                          dl, vkey)
+            plot_heatmap(grid, plain_st['avg_tput'], args.batch_sizes, args.timeout_ms,
+                         'avg_tput', 'Avg Throughput',
+                         os.path.join(out_dir, f'hybrid_3exit_{vkey}_grid_avg_tput_heatmap.png'),
+                         dl, vkey, higher_better=True, raw_fmt='.4f', raw_unit='/ms')
+            plot_heatmap(grid, plain_st['p99_tput'], args.batch_sizes, args.timeout_ms,
+                         'p99_tput', 'P99 Throughput',
+                         os.path.join(out_dir, f'hybrid_3exit_{vkey}_grid_p99_tput_heatmap.png'),
+                         dl, vkey, higher_better=True, raw_fmt='.4f', raw_unit='/ms')
 
         best = min(grid, key=lambda x: x['avg_ms'])
         bests[vkey] = best

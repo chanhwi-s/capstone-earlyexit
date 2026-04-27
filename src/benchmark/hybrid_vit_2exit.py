@@ -60,7 +60,7 @@ from models.plain_vit import build_model as build_plain
 from models.ee_vit_selective import build_model as build_selective
 from benchmark.hybrid_vit_utils import (
     precompute_all_2exit, measure_seg_lut,
-    lut_lookup, bench_plain, lat_stats,
+    lut_lookup, bench_plain, lat_stats, throughput_stats,
 )
 from benchmark.benchmark_pytorch_vit import build_val_loader, load_checkpoint
 
@@ -94,6 +94,7 @@ def simulate(precomp: dict, seg2_preds: np.ndarray, seg2_lut: dict,
                      for j, idx in enumerate(non_exit_idxs)}
 
     response_times = []
+    throughputs    = []  # per-sample 유효 처리량 (samples/ms)
     exit_at        = []
     correct        = []
 
@@ -111,8 +112,10 @@ def simulate(precomp: dict, seg2_preds: np.ndarray, seg2_lut: dict,
         bs     = len(q_idxs)
         bat_ms = lut_lookup(seg2_lut, bs)
         t     += bat_ms
+        bat_tput = bs / bat_ms  # 이 배치의 처리량 (samples/ms)
         for k in range(bs):
             response_times.append(t - q_t_s1_start[k])
+            throughputs.append(bat_tput)
             exit_at.append(exit_block_2)
             sidx = q_idxs[k]
             correct.append(int(seg2_pred_map[sidx] == labels[sidx]))
@@ -126,6 +129,7 @@ def simulate(precomp: dict, seg2_preds: np.ndarray, seg2_lut: dict,
 
         if confs[i] >= threshold:
             response_times.append(seg1_times[i])
+            throughputs.append(1.0 / seg1_times[i])  # bs=1
             exit_at.append(exit_block_1)
             correct.append(int(preds_s1[i] == labels[i]))
         else:
@@ -139,6 +143,7 @@ def simulate(precomp: dict, seg2_preds: np.ndarray, seg2_lut: dict,
 
     flush()  # 잔여 샘플 처리
 
+    total_sim_time = t
     n       = len(response_times)
     n_early = sum(1 for b in exit_at if b == exit_block_1)
 
@@ -150,7 +155,9 @@ def simulate(precomp: dict, seg2_preds: np.ndarray, seg2_lut: dict,
         'accuracy_pct':    sum(correct) / n * 100,
         'early_exit_rate': n_early / n * 100,
         'n_samples':       n,
+        'overall_tput':    n / total_sim_time,
         **lat_stats(response_times),
+        **throughput_stats(throughputs),
     }
 
 
@@ -179,7 +186,9 @@ def run_grid(precomp, seg2_preds, seg2_lut, threshold,
 def save_csv(rows: list, path: str, extra_fields: list = None):
     base = ['batch_size', 'timeout_ms', 'threshold', 'accuracy_pct',
             'early_exit_rate', 'avg_ms', 'p50_ms', 'p90_ms', 'p95_ms', 'p99_ms',
-            'std_ms', 'n_samples']
+            'std_ms', 'overall_tput',
+            'avg_tput', 'p50_tput', 'p90_tput', 'p95_tput', 'p99_tput', 'std_tput',
+            'n_samples']
     fields = base + (extra_fields or [])
     with open(path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
@@ -201,17 +210,18 @@ def _make_grid_matrix(results, batch_sizes, timeout_ms_list, metric):
 
 
 def plot_grid_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
-                      metric, metric_label, out_path, device_label, higher_better=False):
+                      metric, metric_label, out_path, device_label,
+                      higher_better=False, raw_fmt='.2f', raw_unit='ms'):
     """
     grid search 결과 heatmap.
-    셀 값 = (plain_val - hybrid_val) / plain_val * 100  (레이턴시 개선율 %)
-    higher_better=True 이면 hybrid가 클수록 좋은 지표(accuracy 등).
+    셀 값 = 개선율 %  (latency: lower better / throughput: higher better).
+    raw_fmt / raw_unit: 셀 내 원시값 표시 형식.
     """
     mat_raw = _make_grid_matrix(results, batch_sizes, timeout_ms_list, metric)
     if higher_better:
-        mat = (mat_raw - plain_val) / abs(plain_val) * 100   # positive = better
+        mat = (mat_raw - plain_val) / abs(plain_val) * 100
     else:
-        mat = (plain_val - mat_raw) / plain_val * 100         # positive = improvement
+        mat = (plain_val - mat_raw) / plain_val * 100
 
     fig, ax = plt.subplots(figsize=(max(6, len(timeout_ms_list) + 1), max(4, len(batch_sizes) + 1)))
     im = ax.imshow(mat, cmap='RdYlGn', aspect='auto',
@@ -230,7 +240,7 @@ def plot_grid_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
             v = mat[bi, ti]
             raw = mat_raw[bi, ti]
             if not np.isnan(v):
-                txt = f'{v:+.1f}%\n({raw:.2f}ms)'
+                txt = f'{v:+.1f}%\n({raw:{raw_fmt}}{raw_unit})'
                 ax.text(ti, bi, txt, ha='center', va='center', fontsize=7,
                         color='black' if abs(v) < 15 else 'white')
     plt.tight_layout()
@@ -368,18 +378,22 @@ def main():
     # ── Step 3: PlainViT 기준선 ──
     plain_st = None
     if not args.skip_plain:
-        print(f"\n[Step 4] PlainViT baseline ...")
+        print(f"\n[Step 3] PlainViT baseline ...")
         plain_model = build_plain().to(device)
         plain_lats, plain_correct = bench_plain(plain_model, loader, device, args.warmup)
         del plain_model
         torch.cuda.empty_cache()
+        plain_throughputs = [1.0 / l for l in plain_lats]
         plain_st = {
             'accuracy':     sum(plain_correct) / len(plain_correct),
             'accuracy_pct': sum(plain_correct) / len(plain_correct) * 100,
+            'overall_tput': len(plain_lats) / sum(plain_lats),
             **lat_stats(plain_lats),
+            **throughput_stats(plain_throughputs),
         }
         print(f"  PlainViT: acc={plain_st['accuracy_pct']:.2f}%  "
-              f"avg={plain_st['avg_ms']:.2f}ms  p99={plain_st['p99_ms']:.2f}ms")
+              f"avg={plain_st['avg_ms']:.2f}ms  p99={plain_st['p99_ms']:.2f}ms  "
+              f"avg_tput={plain_st['avg_tput']:.4f}/ms")
         with open(os.path.join(out_dir, 'hybrid_2exit_plain.json'), 'w') as f:
             json.dump(plain_st, f, indent=2)
 
@@ -403,6 +417,14 @@ def main():
         plot_grid_heatmap(grid, plain_st['p99_ms'], args.batch_sizes, args.timeout_ms,
                           'p99_ms', 'P99 Latency',
                           os.path.join(out_dir, 'hybrid_2exit_grid_p99_heatmap.png'), dl)
+        plot_grid_heatmap(grid, plain_st['avg_tput'], args.batch_sizes, args.timeout_ms,
+                          'avg_tput', 'Avg Throughput',
+                          os.path.join(out_dir, 'hybrid_2exit_grid_avg_tput_heatmap.png'), dl,
+                          higher_better=True, raw_fmt='.4f', raw_unit='/ms')
+        plot_grid_heatmap(grid, plain_st['p99_tput'], args.batch_sizes, args.timeout_ms,
+                          'p99_tput', 'P99 Throughput',
+                          os.path.join(out_dir, 'hybrid_2exit_grid_p99_tput_heatmap.png'), dl,
+                          higher_better=True, raw_fmt='.4f', raw_unit='/ms')
         # Best = min avg_ms
         best = min(grid, key=lambda x: x['avg_ms'])
         plot_comparison(best, plain_st,

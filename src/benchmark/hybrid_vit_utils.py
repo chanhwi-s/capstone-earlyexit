@@ -349,3 +349,23 @@ def lat_stats(response_times) -> dict:
         'p99_ms': float(np.percentile(lat, 99)),
         'std_ms': float(np.std(lat)),
     }
+
+
+def throughput_stats(throughputs) -> dict:
+    """
+    per-sample 유효 처리량(samples/ms) 통계.
+
+    각 샘플에는 자신이 처리된 배치의 throughput이 할당됨:
+      - early exit (bs=1):  1 / seg1_time_ms
+      - batched seg (bs=B): B / batch_latency_ms
+    높을수록 좋음 (lower latency percentile과 반대 방향).
+    """
+    tp = np.array(throughputs, dtype=np.float64)
+    return {
+        'avg_tput': float(np.mean(tp)),
+        'p50_tput': float(np.percentile(tp, 50)),
+        'p90_tput': float(np.percentile(tp, 90)),
+        'p95_tput': float(np.percentile(tp, 95)),
+        'p99_tput': float(np.percentile(tp, 99)),
+        'std_tput': float(np.std(tp)),
+    }
