@@ -126,7 +126,6 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         bs_q    = len(q_ne1_pos)
         seg2_ms = lut_lookup(seg2_lut, bs_q)
         t      += seg2_ms
-        seg2_tput = bs_q / seg2_ms  # Seg2 배치 처리량
 
         # Seg2 판단 → exit or 즉시 Seg3
         seg3_batch_pos    = []  # ne1 내 위치 (Seg3 입력)
@@ -134,8 +133,9 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
 
         for k, pos in enumerate(q_ne1_pos):
             if confs_s2[pos] >= threshold:  # Seg2에서 탈출
-                response_times.append(t - q_t_s1_start[k])
-                throughputs.append(seg2_tput)
+                rt = t - q_t_s1_start[k]
+                response_times.append(rt)
+                throughputs.append(1.0 / rt)
                 exit_at.append(eb2)
                 orig_idx = int(ne1_idxs[pos])
                 correct.append(int(preds_s2[pos] == labels[orig_idx]))
@@ -147,10 +147,10 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
             n_seg3   = len(seg3_batch_pos)
             seg3_ms  = lut_lookup(seg3_lut, n_seg3)
             t       += seg3_ms
-            seg3_tput = n_seg3 / seg3_ms
             for k, pos in enumerate(seg3_batch_pos):
-                response_times.append(t - seg3_batch_starts[k])
-                throughputs.append(seg3_tput)
+                rt = t - seg3_batch_starts[k]
+                response_times.append(rt)
+                throughputs.append(1.0 / rt)
                 exit_at.append(eb3)
                 orig_idx = int(ne1_idxs[pos])
                 s3_pred  = seg3_pred_map.get(pos, -1)
@@ -167,8 +167,9 @@ def simulate_A(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         t      += seg1_times[i]
 
         if confs_s1[i] >= threshold:
-            response_times.append(seg1_times[i])
-            throughputs.append(1.0 / seg1_times[i])
+            rt = seg1_times[i]
+            response_times.append(rt)
+            throughputs.append(1.0 / rt)
             exit_at.append(eb1)
             correct.append(int(preds_s1[i] == labels[i]))
         else:
@@ -232,7 +233,6 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
                      for k, p in enumerate(ne2_pos)}
 
     seg2_single_ms = lut_lookup(seg2_lut, 1)
-    seg2_single_tput = 1.0 / seg2_single_ms  # bs=1 처리량
 
     response_times = []
     throughputs    = []  # per-sample 유효 처리량 (samples/ms)
@@ -253,10 +253,10 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         bs_q    = len(q_ne1_pos)
         seg3_ms = lut_lookup(seg3_lut, bs_q)
         t      += seg3_ms
-        seg3_tput = bs_q / seg3_ms
         for k, pos in enumerate(q_ne1_pos):
-            response_times.append(t - q_t_s1_start[k])
-            throughputs.append(seg3_tput)
+            rt = t - q_t_s1_start[k]
+            response_times.append(rt)
+            throughputs.append(1.0 / rt)
             exit_at.append(eb3)
             orig_idx = int(ne1_idxs[pos])
             s3_pred  = seg3_pred_map.get(pos, -1)
@@ -270,8 +270,9 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         t      += seg1_times[i]
 
         if confs_s1[i] >= threshold:
-            response_times.append(t - t_start)
-            throughputs.append(1.0 / seg1_times[i])
+            rt = t - t_start
+            response_times.append(rt)
+            throughputs.append(1.0 / rt)
             exit_at.append(eb1)
             correct.append(int(preds_s1[i] == labels[i]))
         else:
@@ -280,8 +281,9 @@ def simulate_B(precomp, seg2_data, seg3_preds_of_s2_nonexit,
             # Seg2 sample-by-sample (no batching)
             t += seg2_single_ms
             if confs_s2[pos] >= threshold:
-                response_times.append(t - t_start)
-                throughputs.append(seg2_single_tput)
+                rt = t - t_start
+                response_times.append(rt)
+                throughputs.append(1.0 / rt)
                 exit_at.append(eb2)
                 orig_idx = int(ne1_idxs[pos])
                 correct.append(int(preds_s2[pos] == labels[orig_idx]))
@@ -371,10 +373,10 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         bs_q    = len(q2_ne1_pos)
         seg3_ms = lut_lookup(seg3_lut, bs_q)
         t      += seg3_ms
-        seg3_tput = bs_q / seg3_ms
         for k, pos in enumerate(q2_ne1_pos):
-            response_times.append(t - q2_t_start[k])
-            throughputs.append(seg3_tput)
+            rt = t - q2_t_start[k]
+            response_times.append(rt)
+            throughputs.append(1.0 / rt)
             exit_at.append(eb3)
             orig_idx = int(ne1_idxs[pos])
             s3_pred  = seg3_pred_map.get(pos, -1)
@@ -390,13 +392,13 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         bs_q    = len(q1_ne1_pos)
         seg2_ms = lut_lookup(seg2_lut, bs_q)
         t      += seg2_ms
-        seg2_tput = bs_q / seg2_ms
 
         for k, pos in enumerate(q1_ne1_pos):
             orig_idx = int(ne1_idxs[pos])
             if confs_s2[pos] >= threshold:
-                response_times.append(t - q1_t_start[k])
-                throughputs.append(seg2_tput)
+                rt = t - q1_t_start[k]
+                response_times.append(rt)
+                throughputs.append(1.0 / rt)
                 exit_at.append(eb2)
                 correct.append(int(preds_s2[pos] == labels[orig_idx]))
             else:
@@ -420,8 +422,9 @@ def simulate_C(precomp, seg2_data, seg3_preds_of_s2_nonexit,
         t      += seg1_times[i]
 
         if confs_s1[i] >= threshold:
-            response_times.append(t - t_start)
-            throughputs.append(1.0 / seg1_times[i])
+            rt = t - t_start
+            response_times.append(rt)
+            throughputs.append(1.0 / rt)
             exit_at.append(eb1)
             correct.append(int(preds_s1[i] == labels[i]))
         else:

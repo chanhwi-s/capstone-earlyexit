@@ -355,10 +355,9 @@ def throughput_stats(throughputs) -> dict:
     """
     per-sample 유효 처리량(samples/ms) 통계.
 
-    각 샘플에는 자신이 처리된 배치의 throughput이 할당됨:
-      - early exit (bs=1):  1 / seg1_time_ms
-      - batched seg (bs=B): B / batch_latency_ms
+    각 샘플에는 1/response_time이 할당됨 (end-to-end, PlainViT의 1/lat과 동일 기준).
     높을수록 좋음 (lower latency percentile과 반대 방향).
+    overall_tput(N/총시뮬시간)은 시스템 레벨 배치 효율 지표로 별도 반환.
     """
     tp = np.array(throughputs, dtype=np.float64)
     return {

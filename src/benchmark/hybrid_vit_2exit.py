@@ -112,10 +112,10 @@ def simulate(precomp: dict, seg2_preds: np.ndarray, seg2_lut: dict,
         bs     = len(q_idxs)
         bat_ms = lut_lookup(seg2_lut, bs)
         t     += bat_ms
-        bat_tput = bs / bat_ms  # 이 배치의 처리량 (samples/ms)
         for k in range(bs):
-            response_times.append(t - q_t_s1_start[k])
-            throughputs.append(bat_tput)
+            rt = t - q_t_s1_start[k]
+            response_times.append(rt)
+            throughputs.append(1.0 / rt)   # 1/응답시간 = end-to-end throughput
             exit_at.append(exit_block_2)
             sidx = q_idxs[k]
             correct.append(int(seg2_pred_map[sidx] == labels[sidx]))
@@ -128,8 +128,9 @@ def simulate(precomp: dict, seg2_preds: np.ndarray, seg2_lut: dict,
         t      += seg1_times[i]
 
         if confs[i] >= threshold:
-            response_times.append(seg1_times[i])
-            throughputs.append(1.0 / seg1_times[i])  # bs=1
+            rt = seg1_times[i]
+            response_times.append(rt)
+            throughputs.append(1.0 / rt)
             exit_at.append(exit_block_1)
             correct.append(int(preds_s1[i] == labels[i]))
         else:
