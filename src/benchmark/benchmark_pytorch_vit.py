@@ -192,9 +192,10 @@ def sweep_stats(confs_all, preds_all, cum_lats_all, labels_all,
     n_exits = len(exit_blocks)
     n = len(labels_all)
 
-    latencies   = []
-    exit_counts = [0] * n_exits
-    n_correct   = 0
+    latencies    = []
+    exit_counts  = [0] * n_exits
+    exit_correct = [0] * n_exits
+    n_correct    = 0
 
     for i in range(n):
         chosen = n_exits - 1
@@ -206,13 +207,20 @@ def sweep_stats(confs_all, preds_all, cum_lats_all, labels_all,
         exit_counts[chosen] += 1
         if preds_all[i][chosen] == labels_all[i]:
             n_correct += 1
+            exit_correct[chosen] += 1
 
     lat = np.array(latencies)
     early_exit_pct = (n - exit_counts[-1]) / n * 100
+    exit_accuracy = [
+        exit_correct[j] / exit_counts[j] if exit_counts[j] > 0 else float('nan')
+        for j in range(n_exits)
+    ]
     return {
         'threshold':      threshold,
         'accuracy':       n_correct / n,
         'exit_rate':      [c / n * 100 for c in exit_counts],
+        'exit_counts':    exit_counts,
+        'exit_accuracy':  exit_accuracy,
         'exit_blocks':    exit_blocks,
         'early_exit_pct': early_exit_pct,
         'n_samples':      n,
@@ -228,10 +236,13 @@ def sweep_stats(confs_all, preds_all, cum_lats_all, labels_all,
 def plain_stats(latencies: list, correct: list) -> dict:
     lat = np.array(latencies)
     n   = len(latencies)
+    acc = sum(correct) / n
     return {
         'threshold':      None,
-        'accuracy':       sum(correct) / n,
+        'accuracy':       acc,
         'exit_rate':      [100.0],
+        'exit_counts':    [n],
+        'exit_accuracy':  [acc],
         'exit_blocks':    [12],
         'early_exit_pct': 0.0,
         'n_samples':      n,
@@ -286,62 +297,130 @@ def plot_accuracy(ee_sweeps: dict, plain_acc: float, out_path: str, device_label
     print(f"  accuracy plot:   {out_path}")
 
 
-def plot_latency(ee_sweeps: dict, plain_avg: float, out_path: str, device_label: str):
-    fig, ax = plt.subplots(figsize=(9, 5))
-    metrics = [('avg_ms', '-', 1.0), ('p90_ms', '--', 0.75),
-               ('p95_ms', '-.', 0.75), ('p99_ms', ':', 0.75)]
-    for name, rows in ee_sweeps.items():
-        thrs  = [r['threshold'] for r in rows]
-        color = _EE_COLORS.get(name, 'gray')
-        for metric, ls, alpha in metrics:
-            vals  = [r[metric] for r in rows]
-            label = f'{name} ({metric.replace("_ms","")})' if metric == 'avg_ms' else None
-            ax.plot(thrs, vals, ls=ls, color=color, label=label, alpha=alpha)
-    ax.axhline(plain_avg, ls='--', color='steelblue',
-               label=f'PlainViT avg ({plain_avg:.1f} ms)')
-    ax.set_xlabel('Threshold')
-    ax.set_ylabel('Latency (ms)')
-    ax.set_title(f'Latency vs Threshold  ({device_label})\n'
-                 'solid=avg  dashed=p90  dashdot=p95  dotted=p99')
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"  latency plot:    {out_path}")
-
-
-def plot_exit_rate(ee_sweeps: dict, out_path: str, device_label: str):
+def plot_accuracy_heatmap(ee_sweeps: dict, out_path: str, device_label: str):
+    """exit block × threshold → 해당 block에서 탈출한 sample들의 accuracy heatmap."""
     n_models = len(ee_sweeps)
-    fig, axes = plt.subplots(1, n_models, figsize=(7 * n_models, 5))
+    if n_models == 0:
+        return
+    fig, axes = plt.subplots(1, n_models, figsize=(max(8, len(next(iter(ee_sweeps.values()))) + 2) * n_models, 4))
     if n_models == 1:
         axes = [axes]
 
-    block_colors = ['royalblue', 'darkorange', 'seagreen']
-
     for ax, (name, rows) in zip(axes, ee_sweeps.items()):
-        thrs    = [str(r['threshold']) for r in rows]
-        blocks  = [f'B{b}' for b in rows[0]['exit_blocks']]
-        bottom  = np.zeros(len(rows))
-        for j, blk in enumerate(blocks):
-            rates = np.array([r['exit_rate'][j] for r in rows])
-            ax.bar(range(len(rows)), rates, bottom=bottom,
-                   color=block_colors[j % len(block_colors)],
-                   label=blk, alpha=0.85, edgecolor='white')
-            bottom += rates
-        ax.set_xticks(range(len(rows)))
-        ax.set_xticklabels(thrs, rotation=45)
-        ax.set_ylabel('Exit Rate (%)')
-        ax.set_ylim(0, 110)
-        ax.set_title(f'{name}')
-        ax.legend(title='Exit block')
-        ax.grid(axis='y', alpha=0.3)
+        thrs   = [str(r['threshold']) for r in rows]
+        blocks = [f'B{b}' for b in rows[0]['exit_blocks']]
+        # data shape: [n_exits, n_thresholds]
+        data = np.array([[r['exit_accuracy'][j] * 100
+                          if not np.isnan(r['exit_accuracy'][j]) else np.nan
+                          for r in rows]
+                         for j in range(len(blocks))])
 
-    fig.suptitle(f'Exit Block Distribution vs Threshold  ({device_label})', fontsize=12)
+        valid = data[~np.isnan(data)]
+        vmin  = float(np.floor(valid.min() - 1)) if len(valid) else 70.0
+        vmax  = float(np.ceil(valid.max()  + 1)) if len(valid) else 90.0
+
+        im = ax.imshow(data, aspect='auto', cmap='RdYlGn', vmin=vmin, vmax=vmax)
+        plt.colorbar(im, ax=ax, label='Accuracy (%)')
+        ax.set_xticks(range(len(thrs)))
+        ax.set_xticklabels(thrs, rotation=45)
+        ax.set_yticks(range(len(blocks)))
+        ax.set_yticklabels(blocks)
+        ax.set_xlabel('Threshold')
+        ax.set_ylabel('Exit Block')
+        ax.set_title(f'{name}')
+        for i in range(len(blocks)):
+            for j in range(len(thrs)):
+                val = data[i, j]
+                if not np.isnan(val):
+                    ax.text(j, i, f'{val:.1f}%',
+                            ha='center', va='center', fontsize=8)
+                else:
+                    ax.text(j, i, 'N/A', ha='center', va='center',
+                            fontsize=7, color='gray')
+
+    fig.suptitle(f'Per-Exit Accuracy Heatmap  ({device_label})', fontsize=12)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"  exit rate plot:  {out_path}")
+    print(f"  accuracy heatmap: {out_path}")
+
+
+def plot_latency_split(ee_sweeps: dict, plain_st: dict, out_dir: str, device_label: str):
+    """2-exit / 3-exit 각각 PlainViT와 1:1 비교하는 별도 latency plot."""
+    metrics = [
+        ('avg_ms', '-',  1.0, 'avg'),
+        ('p90_ms', '--', 0.85, 'p90'),
+        ('p95_ms', '-.', 0.85, 'p95'),
+        ('p99_ms', ':',  0.85, 'p99'),
+    ]
+    plain_color = 'steelblue'
+
+    for name, rows in ee_sweeps.items():
+        fig, ax = plt.subplots(figsize=(10, 5))
+        thrs  = [r['threshold'] for r in rows]
+        color = _EE_COLORS.get(name, 'gray')
+
+        # PlainViT: 수평선 (threshold 없음)
+        if plain_st:
+            for metric, ls, alpha, tag in metrics:
+                ax.axhline(plain_st[metric], ls=ls, color=plain_color,
+                           alpha=alpha, label=f'PlainViT ({tag})')
+
+        # EE 모델: threshold별 변화 선
+        for metric, ls, alpha, tag in metrics:
+            vals = [r[metric] for r in rows]
+            ax.plot(thrs, vals, ls=ls, color=color,
+                    alpha=alpha, label=f'{name} ({tag})')
+
+        ax.set_xlabel('Threshold')
+        ax.set_ylabel('Latency (ms)')
+        ax.set_title(f'Latency vs Threshold — PlainViT vs {name}  ({device_label})')
+        ax.legend(fontsize=8, ncol=2)
+        ax.grid(alpha=0.3)
+        plt.tight_layout()
+
+        suffix   = '2exit' if '2exit' in name else '3exit'
+        out_path = os.path.join(out_dir, f'pytorch_sweep_latency_{suffix}.png')
+        plt.savefig(out_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  latency plot ({suffix}): {out_path}")
+
+
+def plot_exit_rate_heatmap(ee_sweeps: dict, out_path: str, device_label: str):
+    """exit block × threshold → exit rate (%) heatmap."""
+    n_models = len(ee_sweeps)
+    if n_models == 0:
+        return
+    fig, axes = plt.subplots(1, n_models, figsize=(max(8, len(next(iter(ee_sweeps.values()))) + 2) * n_models, 4))
+    if n_models == 1:
+        axes = [axes]
+
+    for ax, (name, rows) in zip(axes, ee_sweeps.items()):
+        thrs   = [str(r['threshold']) for r in rows]
+        blocks = [f'B{b}' for b in rows[0]['exit_blocks']]
+        # data shape: [n_exits, n_thresholds]
+        data = np.array([[r['exit_rate'][j] for r in rows]
+                         for j in range(len(blocks))])
+        im = ax.imshow(data, aspect='auto', cmap='YlOrRd', vmin=0, vmax=100)
+        plt.colorbar(im, ax=ax, label='Exit Rate (%)')
+        ax.set_xticks(range(len(thrs)))
+        ax.set_xticklabels(thrs, rotation=45)
+        ax.set_yticks(range(len(blocks)))
+        ax.set_yticklabels(blocks)
+        ax.set_xlabel('Threshold')
+        ax.set_ylabel('Exit Block')
+        ax.set_title(f'{name}')
+        for i in range(len(blocks)):
+            for j in range(len(thrs)):
+                ax.text(j, i, f'{data[i, j]:.1f}%',
+                        ha='center', va='center', fontsize=8,
+                        color='black' if data[i, j] < 70 else 'white')
+
+    fig.suptitle(f'Exit Rate Heatmap  ({device_label})', fontsize=12)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  exit rate heatmap: {out_path}")
 
 
 def plot_tradeoff(ee_sweeps: dict, plain_st: dict, out_path: str, device_label: str):
@@ -510,13 +589,13 @@ def main():
     dl = args.device_label
     if ee_sweeps:
         plain_acc = plain_st['accuracy'] if plain_st else 0.0
-        plain_avg = plain_st['avg_ms']   if plain_st else 0.0
         plot_accuracy(ee_sweeps, plain_acc,
                       os.path.join(out_dir, 'pytorch_sweep_accuracy.png'), dl)
-        plot_latency(ee_sweeps, plain_avg,
-                     os.path.join(out_dir, 'pytorch_sweep_latency.png'), dl)
-        plot_exit_rate(ee_sweeps,
-                       os.path.join(out_dir, 'pytorch_sweep_exit_rate.png'), dl)
+        plot_accuracy_heatmap(ee_sweeps,
+                              os.path.join(out_dir, 'pytorch_sweep_accuracy_heatmap.png'), dl)
+        plot_latency_split(ee_sweeps, plain_st, out_dir, dl)
+        plot_exit_rate_heatmap(ee_sweeps,
+                               os.path.join(out_dir, 'pytorch_sweep_exit_rate_heatmap.png'), dl)
         plot_tradeoff(ee_sweeps, plain_st,
                       os.path.join(out_dir, 'pytorch_sweep_tradeoff.png'), dl)
 
