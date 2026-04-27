@@ -363,8 +363,10 @@ def plot_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
 def plot_line_charts(all_grids, plain_st, batch_sizes, timeout_ms_list,
                      out_dir, device_label, threshold):
     """
-    variant별 1×3 figure = 총 9개 subplot.
-    x=batch_size, y=avg_ms/p99_ms/avg_tput, lines=timeout.
+    variant별 2×3 figure = 총 18개 subplot.
+    Row 0: avg_ms / p99_ms / avg_tput
+    Row 1: p90_tput / p95_tput / p99_tput
+    x=batch_size, lines=timeout.
     """
     tab10 = plt.get_cmap('tab10')
     colors = [tab10(i) for i in range(len(timeout_ms_list))]
@@ -374,14 +376,17 @@ def plot_line_charts(all_grids, plain_st, batch_sizes, timeout_ms_list,
         ('avg_ms',   'Avg Latency (ms)'),
         ('p99_ms',   'P99 Latency (ms)'),
         ('avg_tput', 'Avg Throughput (samples/ms)'),
+        ('p90_tput', 'P90 Throughput (samples/ms)'),
+        ('p95_tput', 'P95 Throughput (samples/ms)'),
+        ('p99_tput', 'P99 Throughput (samples/ms)'),
     ]
 
     for vkey, results in all_grids.items():
-        fig, axes = plt.subplots(1, 3, figsize=(17, 5))
+        fig, axes = plt.subplots(2, 3, figsize=(17, 10))
         fig.suptitle(f'Variant {vkey} — Batch Size vs Metrics'
                      f'  (thr={threshold:.2f}, {device_label})', fontsize=13)
 
-        for ax, (metric, ylabel) in zip(axes, metrics_cfg):
+        for ax, (metric, ylabel) in zip(axes.flat, metrics_cfg):
             for ci, tms in enumerate(timeout_ms_list):
                 subset = sorted([r for r in results if r['timeout_ms'] == tms],
                                 key=lambda r: r['batch_size'])
@@ -532,6 +537,8 @@ def main():
                 ('p95_ms',   'P95 Latency',     False, '.2f',  'ms'),
                 ('p99_ms',   'P99 Latency',     False, '.2f',  'ms'),
                 ('avg_tput', 'Avg Throughput',  True,  '.4f',  '/ms'),
+                ('p90_tput', 'P90 Throughput',  True,  '.4f',  '/ms'),
+                ('p95_tput', 'P95 Throughput',  True,  '.4f',  '/ms'),
                 ('p99_tput', 'P99 Throughput',  True,  '.4f',  '/ms'),
             ]:
                 plot_heatmap(
