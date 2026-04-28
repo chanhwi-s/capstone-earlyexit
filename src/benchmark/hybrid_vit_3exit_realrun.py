@@ -532,14 +532,15 @@ def main():
 
         if plain_st:
             for metric, label, hb, rfmt, runit in [
-                ('avg_ms',   'Avg Latency',     False, '.2f',  'ms'),
-                ('p90_ms',   'P90 Latency',     False, '.2f',  'ms'),
-                ('p95_ms',   'P95 Latency',     False, '.2f',  'ms'),
-                ('p99_ms',   'P99 Latency',     False, '.2f',  'ms'),
-                ('avg_tput', 'Avg Throughput',  True,  '.4f',  '/ms'),
-                ('p90_tput', 'P90 Throughput',  True,  '.4f',  '/ms'),
-                ('p95_tput', 'P95 Throughput',  True,  '.4f',  '/ms'),
-                ('p99_tput', 'P99 Throughput',  True,  '.4f',  '/ms'),
+                ('avg_ms',       'Avg Latency',        False, '.2f',  'ms'),
+                ('p90_ms',       'P90 Latency',        False, '.2f',  'ms'),
+                ('p95_ms',       'P95 Latency',        False, '.2f',  'ms'),
+                ('p99_ms',       'P99 Latency',        False, '.2f',  'ms'),
+                ('overall_tput', 'Overall Throughput',  True,  '.4f',  '/ms'),
+                ('avg_tput',     'Avg Throughput',      True,  '.4f',  '/ms'),
+                ('p90_tput',     'P90 Throughput',      True,  '.4f',  '/ms'),
+                ('p95_tput',     'P95 Throughput',      True,  '.4f',  '/ms'),
+                ('p99_tput',     'P99 Throughput',      True,  '.4f',  '/ms'),
             ]:
                 plot_heatmap(
                     grid, plain_st[metric], args.batch_sizes, args.timeout_ms,
