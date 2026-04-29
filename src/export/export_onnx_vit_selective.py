@@ -114,10 +114,14 @@ def _verify(onnx_path: str, n_outputs: int):
 
 # ── Export: PlainViT ──────────────────────────────────────────────────────────
 
-def export_plain_vit(device: torch.device, out_dir: str):
-    print("\n[PlainViT] ONNX export ...")
+def export_plain_vit(device: torch.device, out_dir: str, bsz: int = 8):
+    """
+    bsz: 고정 배치 크기 (static). plain_vit는 항상 이 크기로 추론.
+    dynamic_axes 없음 → ONNX Runtime / TRT 최적화에 유리.
+    """
+    print(f"\n[PlainViT] ONNX export (static batch={bsz}) ...")
     wrapper = PlainViTWrapper().to(device).eval()
-    dummy   = torch.randn(1, 3, 224, 224, device=device)
+    dummy   = torch.randn(bsz, 3, 224, 224, device=device)
     path    = os.path.join(out_dir, "plain_vit.onnx")
 
     with torch.no_grad():
@@ -128,40 +132,49 @@ def export_plain_vit(device: torch.device, out_dir: str):
             opset_version=17,
             verbose=False,
         )
-    print(f"  saved → {path}")
+    print(f"  saved → {path}  (batch={bsz})")
     _verify(path, 1)
 
 
 # ── Export: N-exit 세그먼트 ───────────────────────────────────────────────────
 
 def export_selective_segs(model: SelectiveExitViT, device: torch.device,
-                          out_dir: str):
+                          out_dir: str, bsz: int = 8):
+    """
+    bsz: seg1 고정 배치 크기 (plain_vit와 동일). seg2+ 는 dynamic batch.
+
+    seg1  : static batch=bsz  → 항상 bsz개 이미지를 한 번에 처리
+    seg2+ : dynamic batch      → flush 크기(bsz, 2*bsz, ...) 에 따라 가변
+    """
     n_exits     = model.NUM_BLOCKS
     exit_blocks = model.exit_blocks
     model_tag   = f"{n_exits}exit ({'+'.join(f'B{b}' for b in exit_blocks)})"
 
-    print(f"\n[{model_tag}] ONNX segment export ...")
-    dummy_image = torch.randn(1, 3, 224, 224, device=device)
+    print(f"\n[{model_tag}] ONNX segment export (seg1 static bs={bsz}, seg2+ dynamic) ...")
+    dummy_image = torch.randn(bsz, 3, 224, 224, device=device)
 
-    # ── seg1: in="image" → out=["feat_out", "ee_logits"] ──
+    # ── seg1: static batch=bsz, in="image" → out=["feat_out", "ee_logits"] ──
     seg1 = ViTSeg1(model).to(device).eval()
     with torch.no_grad():
-        feat_out, _ = seg1(dummy_image)
+        feat_out, _ = seg1(dummy_image)       # feat_out: [bsz, 197, 768]
 
     path_seg1 = os.path.join(out_dir, "seg1.onnx")
     with torch.no_grad():
         torch.onnx.export(
             seg1, dummy_image, path_seg1,
             input_names=["image"],
-            output_names=["feat_out", "ee_logits"],   # "feat" ≠ input name → 충돌 없음
+            output_names=["feat_out", "ee_logits"],
             opset_version=17, verbose=False,
+            # dynamic_axes 없음 → static batch=bsz
         )
-    print(f"  seg1 saved → {path_seg1}")
+    print(f"  seg1 saved → {path_seg1}  (static batch={bsz})")
     _verify(path_seg1, 2)
 
     feat_cur = feat_out.detach()
+    # seg2+ dynamic export 용 단일 샘플 dummy (batch dim만 symbolic)
+    feat_dyn  = feat_cur[:1].detach()
 
-    # ── 중간 세그먼트: in="feat_in" → out=["feat_out", "ee_logits"] (3-exit 이상) ──
+    # ── 중간 세그먼트 (3-exit 이상): dynamic batch ──
     for seg_idx in range(1, n_exits - 1):
         seg_mid = ViTSegMid(model, seg_idx).to(device).eval()
         with torch.no_grad():
@@ -170,27 +183,37 @@ def export_selective_segs(model: SelectiveExitViT, device: torch.device,
         path_mid = os.path.join(out_dir, f"seg{seg_idx + 1}.onnx")
         with torch.no_grad():
             torch.onnx.export(
-                seg_mid, feat_cur, path_mid,
-                input_names=["feat_in"],               # 입력: feat_in
-                output_names=["feat_out", "ee_logits"],# 출력: feat_out (이름 충돌 없음)
+                seg_mid, feat_dyn, path_mid,
+                input_names=["feat_in"],
+                output_names=["feat_out", "ee_logits"],
                 opset_version=17, verbose=False,
+                dynamic_axes={
+                    "feat_in":   {0: "batch_size"},
+                    "feat_out":  {0: "batch_size"},
+                    "ee_logits": {0: "batch_size"},
+                },
             )
-        print(f"  seg{seg_idx + 1} (mid) saved → {path_mid}")
+        print(f"  seg{seg_idx + 1} (mid) saved → {path_mid}  (dynamic batch)")
         _verify(path_mid, 2)
-        feat_cur = feat_next.detach()
+        feat_cur  = feat_next.detach()
+        feat_dyn  = feat_cur[:1].detach()
 
-    # ── 마지막 세그먼트: in="feat_in" → out=["ee_logits"] ──
+    # ── 마지막 세그먼트: dynamic batch ──
     last_idx = n_exits - 1
     seg_last = ViTSegLast(model, last_idx).to(device).eval()
     path_last = os.path.join(out_dir, f"seg{n_exits}.onnx")
     with torch.no_grad():
         torch.onnx.export(
-            seg_last, feat_cur, path_last,
+            seg_last, feat_dyn, path_last,
             input_names=["feat_in"],
             output_names=["ee_logits"],
             opset_version=17, verbose=False,
+            dynamic_axes={
+                "feat_in":   {0: "batch_size"},
+                "ee_logits": {0: "batch_size"},
+            },
         )
-    print(f"  seg{n_exits} (last) saved → {path_last}")
+    print(f"  seg{n_exits} (last) saved → {path_last}  (dynamic batch)")
     _verify(path_last, 1)
 
     print(f"  → {out_dir}/")
@@ -237,11 +260,16 @@ def main():
                         help="3-exit 블록 번호 (기본: 6 9 12)")
     parser.add_argument("--out-exp", type=str, default=None,
                         help="ONNX 저장 exp 디렉토리 (기본: 최신 exp_* 자동 선택)")
+    parser.add_argument("--baseline-batch-size", type=int, default=8,
+                        help="seg1 / plain_vit 고정 배치 크기 (기본: 8). "
+                             "seg2+ 는 항상 dynamic batch.")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
-    print(f"Export target: {args.model}\n")
+    bsz    = args.baseline_batch_size
+    print(f"Device        : {device}")
+    print(f"Export target : {args.model}")
+    print(f"Baseline batch: {bsz}  (seg1/plain static, seg2+ dynamic)\n")
 
     # ONNX 출력 exp 디렉토리 — 명시하지 않으면 최신 exp (paths.EXPERIMENTS_DIR)
     if args.out_exp:
@@ -259,7 +287,7 @@ def main():
 
     # ── PlainViT ──
     if do_plain:
-        export_plain_vit(device, _onnx_dir("plain_vit"))
+        export_plain_vit(device, _onnx_dir("plain_vit"), bsz=bsz)
 
     # ── 2-exit ──
     if do_2exit:
@@ -273,7 +301,7 @@ def main():
         else:
             print(f"2-exit 체크포인트: {ckpt}")
             model = load_selective_model(args.exit_blocks_2, ckpt, device)
-            export_selective_segs(model, device, _onnx_dir("ee_vit_2exit"))
+            export_selective_segs(model, device, _onnx_dir("ee_vit_2exit"), bsz=bsz)
             del model
 
     # ── 3-exit ──
@@ -287,10 +315,11 @@ def main():
         else:
             print(f"3-exit 체크포인트: {ckpt}")
             model = load_selective_model(args.exit_blocks_3, ckpt, device)
-            export_selective_segs(model, device, _onnx_dir("ee_vit_3exit"))
+            export_selective_segs(model, device, _onnx_dir("ee_vit_3exit"), bsz=bsz)
             del model
 
     print(f"\n  ONNX export 완료  →  {paths.EXPERIMENTS_DIR}/onnx/")
+    print("  ※ 기존 seg2.onnx / plain_vit.onnx 가 있으면 덮어씁니다.")
     print("  다음 단계: Orin으로 전송 후 orin_vit_pipeline.sh 실행")
 
 
