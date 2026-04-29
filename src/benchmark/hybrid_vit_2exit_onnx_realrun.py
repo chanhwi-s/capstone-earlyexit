@@ -256,18 +256,30 @@ def run_grid(seg1_sess, seg2_sess, samples, device,
              thr, bs1, batch_sizes, timeout_ms_list):
     total   = len(batch_sizes) * len(timeout_ms_list)
     results = []
+    skipped = []
     print(f"\n  {total} combos × {len(samples)} samples ...")
     idx = 0
     for bs2 in batch_sizes:
         for tms in timeout_ms_list:
-            st  = run_combo(seg1_sess, seg2_sess, samples, device,
-                            thr, bs1, bs2, tms)
-            results.append(st)
             idx += 1
-            print(f"    [{idx:>3}/{total}] bs2={bs2:>4} tms={tms:>5.1f}ms  "
-                  f"acc={st['accuracy_pct']:.2f}%  avg={st['avg_ms']:.2f}ms  "
-                  f"p99={st['p99_ms']:.2f}ms  "
-                  f"exit=[{st['exit_rate_b1']:.0f}%/{st['exit_rate_b2']:.0f}%]")
+            try:
+                st = run_combo(seg1_sess, seg2_sess, samples, device,
+                               thr, bs1, bs2, tms)
+                results.append(st)
+                print(f"    [{idx:>3}/{total}] bs2={bs2:>4} tms={tms:>5.1f}ms  "
+                      f"acc={st['accuracy_pct']:.2f}%  avg={st['avg_ms']:.2f}ms  "
+                      f"p99={st['p99_ms']:.2f}ms  "
+                      f"exit=[{st['exit_rate_b1']:.0f}%/{st['exit_rate_b2']:.0f}%]")
+            except RuntimeError as e:
+                if 'Failed to allocate memory' in str(e) or 'out of memory' in str(e).lower():
+                    torch.cuda.empty_cache()
+                    skipped.append((bs2, tms))
+                    print(f"    [{idx:>3}/{total}] bs2={bs2:>4} tms={tms:>5.1f}ms  "
+                          f"[SKIP] GPU OOM — batch too large for VRAM")
+                else:
+                    raise
+    if skipped:
+        print(f"\n  OOM으로 스킵된 조합 {len(skipped)}개: {skipped}")
     return results
 
 
