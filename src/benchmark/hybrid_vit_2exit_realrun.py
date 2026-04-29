@@ -194,7 +194,8 @@ def _grid_mat(results, batch_sizes, timeout_ms_list, metric):
 
 def plot_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
                  metric, metric_label, out_path, device_label, threshold,
-                 higher_better=False, raw_fmt='.2f', raw_unit='ms'):
+                 higher_better=False, raw_fmt='.2f', raw_unit='ms',
+                 baseline_bs=8):
     import matplotlib.colors as mcolors
     mat_raw = _grid_mat(results, batch_sizes, timeout_ms_list, metric)
     mat = ((mat_raw - plain_val) / abs(plain_val) * 100 if higher_better
@@ -208,7 +209,7 @@ def plot_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
     fig, ax = plt.subplots(figsize=(max(6, len(timeout_ms_list) * 1.4 + 1),
                                     max(4, len(batch_sizes) * 0.9 + 1)))
     im = ax.imshow(mat, cmap=cmap, norm=norm, aspect='auto')
-    cb = plt.colorbar(im, ax=ax, label='Improvement over PlainViT (%)')
+    cb = plt.colorbar(im, ax=ax, label=f'Improvement over PlainViT (bs={baseline_bs}) (%)')
     cb.ax.tick_params(labelsize=9)
     ax.set_xticks(range(len(timeout_ms_list)))
     ax.set_xticklabels([f'{t}ms' for t in timeout_ms_list], fontsize=10)
@@ -216,7 +217,8 @@ def plot_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
     ax.set_yticklabels([f'bs={b}' for b in batch_sizes], fontsize=10)
     ax.set_xlabel('Timeout', fontsize=11); ax.set_ylabel('Batch Size', fontsize=11)
     ax.set_title(f'{metric_label} Improvement — 2-exit (real)\n'
-                 f'(thr={threshold:.2f}, {device_label})', fontsize=11)
+                 f'(thr={threshold:.2f}, {device_label}, baseline bs={baseline_bs})',
+                 fontsize=11)
     for bi in range(len(batch_sizes)):
         for ti in range(len(timeout_ms_list)):
             v, raw = mat[bi, ti], mat_raw[bi, ti]
@@ -233,7 +235,7 @@ def plot_heatmap(results, plain_val, batch_sizes, timeout_ms_list,
 
 
 def plot_line_charts(results, plain_st, batch_sizes, timeout_ms_list,
-                     out_dir, device_label, threshold):
+                     out_dir, device_label, threshold, baseline_bs=8):
     """
     2×3 figure (6 subplots).
     Row 0: avg_ms / p99_ms / avg_tput
@@ -255,7 +257,8 @@ def plot_line_charts(results, plain_st, batch_sizes, timeout_ms_list,
 
     fig, axes = plt.subplots(2, 3, figsize=(17, 10))
     fig.suptitle(f'2-exit Hybrid — Batch Size vs Metrics'
-                 f'  (thr={threshold:.2f}, {device_label})', fontsize=13)
+                 f'  (thr={threshold:.2f}, {device_label}, baseline bs={baseline_bs})',
+                 fontsize=13)
 
     for ax, (metric, ylabel) in zip(axes.flat, metrics_cfg):
         for ci, tms in enumerate(timeout_ms_list):
@@ -272,7 +275,7 @@ def plot_line_charts(results, plain_st, batch_sizes, timeout_ms_list,
 
         if plain_st and metric in plain_st:
             ax.axhline(plain_st[metric], color='#222222', linestyle='--',
-                       linewidth=1.8, label='PlainViT', alpha=0.85)
+                       linewidth=1.8, label=f'PlainViT (bs={baseline_bs})', alpha=0.85)
 
         ax.set_xlabel('Batch Size', fontsize=10)
         ax.set_ylabel(ylabel, fontsize=10)
@@ -296,17 +299,20 @@ def main():
     parser = argparse.ArgumentParser(
         description='SelectiveExitViT 2-exit 실제 GPU 실행 기반 하이브리드 벤치마크'
     )
-    parser.add_argument('--threshold',    type=float, required=True)
-    parser.add_argument('--data-root',    type=str,   default='/home2/imagenet')
-    parser.add_argument('--exit-blocks',  type=int,   nargs='+', default=[8, 12])
-    parser.add_argument('--n-samples',    type=int,   default=1000)
-    parser.add_argument('--warmup',       type=int,   default=50)
-    parser.add_argument('--seed',         type=int,   default=42)
-    parser.add_argument('--batch-sizes',  type=int,   nargs='+', default=[1, 4, 8, 16, 32])
-    parser.add_argument('--timeout-ms',   type=float, nargs='+', default=[1., 2., 5., 10., 20.])
-    parser.add_argument('--out-dir',      type=str,   default=None)
-    parser.add_argument('--device-label', type=str,   default='RTX 5090')
-    parser.add_argument('--skip-plain',   action='store_true')
+    parser.add_argument('--threshold',          type=float, required=True)
+    parser.add_argument('--data-root',          type=str,   default='/home2/imagenet')
+    parser.add_argument('--exit-blocks',        type=int,   nargs='+', default=[8, 12])
+    parser.add_argument('--n-samples',          type=int,   default=1000)
+    parser.add_argument('--warmup',             type=int,   default=50)
+    parser.add_argument('--seed',               type=int,   default=42)
+    parser.add_argument('--batch-sizes',        type=int,   nargs='+',
+                        default=[8, 16, 32, 64, 128, 256, 512])
+    parser.add_argument('--timeout-ms',         type=float, nargs='+', default=[1., 2., 5., 10., 20.])
+    parser.add_argument('--baseline-batch-size', type=int,  default=8,
+                        help='Plain 기준선 배치 크기 (industry standard: 8)')
+    parser.add_argument('--out-dir',            type=str,   default=None)
+    parser.add_argument('--device-label',       type=str,   default='RTX 5090')
+    parser.add_argument('--skip-plain',         action='store_true')
     args = parser.parse_args()
 
     eb1, eb2 = args.exit_blocks[0], args.exit_blocks[-1]
@@ -316,13 +322,14 @@ def main():
         paths.EXPERIMENTS_DIR, 'eval', f'hybrid_2exit_realrun_{ts}')
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"Device    : {device}  ({args.device_label})")
-    print(f"Threshold : {args.threshold}")
-    print(f"N-Samples : {args.n_samples}  (warmup={args.warmup}, seed={args.seed})")
-    print(f"ExitBlocks: {args.exit_blocks}")
-    print(f"BatchSizes: {args.batch_sizes}")
-    print(f"TimeoutMs : {args.timeout_ms}")
-    print(f"Output    : {out_dir}\n")
+    print(f"Device      : {device}  ({args.device_label})")
+    print(f"Threshold   : {args.threshold}")
+    print(f"N-Samples   : {args.n_samples}  (warmup={args.warmup}, seed={args.seed})")
+    print(f"ExitBlocks  : {args.exit_blocks}")
+    print(f"BatchSizes  : {args.batch_sizes}")
+    print(f"TimeoutMs   : {args.timeout_ms}")
+    print(f"Baseline BS : {args.baseline_batch_size}  (industry standard)")
+    print(f"Output      : {out_dir}\n")
 
     # ── 모델 로드 ──
     ckpt = paths.latest_checkpoint('ee_vit_2exit')
@@ -351,25 +358,39 @@ def main():
             _ = model.exit_heads[1](feat)
     torch.cuda.synchronize()
 
-    # ── PlainViT 기준선 ──
+    # ── PlainViT 기준선 (batch=baseline_batch_size) ──
+    # 산업 표준 배치 추론 방식: MLPerf Inference / NVIDIA Triton dynamic batching 기준 bs=8~16.
+    # N개 샘플을 baseline_batch_size 단위로 묶어 일괄 실행하고
+    # per-sample latency = batch_time / batch_size 로 리포트.
     plain_st = None
+    bsz_plain = args.baseline_batch_size
     if not args.skip_plain:
-        print(f"\nPlainViT 기준선 ({len(eval_samples)}개) ...")
+        print(f"\nPlainViT 기준선 (bs={bsz_plain}, {len(eval_samples)}개) ...")
         plain_model = build_plain().to(device)
         plain_model.eval()
         plain_lats, plain_correct = [], []
         with torch.no_grad():
-            for img, lbl in eval_samples:
-                x = img.unsqueeze(0).to(device)
-                s = torch.cuda.Event(enable_timing=True)
-                e = torch.cuda.Event(enable_timing=True)
-                s.record(); logits = plain_model(x); e.record()
+            for i in range(0, len(eval_samples), bsz_plain):
+                batch = eval_samples[i : i + bsz_plain]
+                imgs = torch.stack([s[0] for s in batch]).to(device, non_blocking=True)
+                lbls = [s[1] for s in batch]
+                s_ev = torch.cuda.Event(enable_timing=True)
+                e_ev = torch.cuda.Event(enable_timing=True)
+                s_ev.record()
+                logits = plain_model(imgs)
+                e_ev.record()
                 torch.cuda.synchronize()
-                plain_lats.append(s.elapsed_time(e))
-                plain_correct.append(int(logits.argmax(1).item() == lbl))
+                batch_ms = s_ev.elapsed_time(e_ev)
+                per_ms   = batch_ms / len(batch)
+                preds    = logits.argmax(1).tolist()
+                for k in range(len(batch)):
+                    plain_lats.append(per_ms)
+                    plain_correct.append(int(preds[k] == lbls[k]))
         del plain_model; torch.cuda.empty_cache()
+        # per-sample throughput = batch_size / batch_time = 1 / per_ms
         plain_tputs = [1.0 / l for l in plain_lats]
         plain_st = {
+            'baseline_batch_size': bsz_plain,
             'accuracy_pct': sum(plain_correct) / len(plain_correct) * 100,
             'overall_tput': len(plain_lats) / sum(plain_lats),
             **lat_stats(plain_lats),
@@ -407,10 +428,11 @@ def main():
                 grid, plain_st[metric], args.batch_sizes, args.timeout_ms,
                 metric, label,
                 os.path.join(out_dir, f'hybrid_2exit_realrun_{metric}_heatmap.png'),
-                dl, args.threshold, higher_better=hb, raw_fmt=rfmt, raw_unit=runit)
+                dl, args.threshold, higher_better=hb, raw_fmt=rfmt, raw_unit=runit,
+                baseline_bs=bsz_plain)
 
         plot_line_charts(grid, plain_st, args.batch_sizes, args.timeout_ms,
-                         out_dir, dl, args.threshold)
+                         out_dir, dl, args.threshold, baseline_bs=bsz_plain)
 
     best = min(grid, key=lambda x: x['avg_ms'])
     print(f"\nBest: bs={best['batch_size']} tms={best['timeout_ms']}ms  "
