@@ -25,7 +25,7 @@ SRC_DIR="$PROJECT_ROOT/src"
 export HF_HOME="/home/cap10/.cache/huggingface"
 export HUGGINGFACE_HUB_CACHE="/home/cap10/.cache/huggingface/hub"
 
-DATA_ROOT="${DATA_ROOT:-/home2/imagenet}"
+DATA_ROOT="${DATA_ROOT:-/home2}"
 EPOCHS="${EPOCHS:-30}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 LR="${LR:-1e-3}"
