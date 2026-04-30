@@ -130,26 +130,39 @@ def run_combo(seg1_sess, seg2_sess, samples, device, thr, bs1, bs2):
     No timeout. Queue flush only when exactly bs2 non-exit samples accumulate.
     End-of-dataset partial queue (<bs2) is DISCARDED (static shape constraint).
 
+    per-sample rt 분해:
+      exit1  : rt = seg1_ms  (queue_wait=0, seg2_ms=0)
+      exit2  : rt = seg1_ms + queue_wait + seg2_ms
+                   - seg1_ms   : 해당 샘플이 속한 seg1 배치 실행 시간
+                   - queue_wait: seg1 완료 후 seg2 flush 시작 전까지 대기
+                   - seg2_ms   : seg2 배치 실행 시간 (flush 내 모두 동일)
+
     Returns:
-        records   : list of {rt_ms, exit (1=seg1 / 2=seg2), correct}
+        records   : list of {rt_ms, exit, correct, seg1_ms, queue_wait_ms, seg2_ms}
         wall_time : 총 시뮬레이션 시간 (ms)
         n_discard : 마지막에 폐기된 non-exit 샘플 수
     """
     records = []
-    q_feats, q_ts, q_lbls = [], [], []
+    q_feats, q_ts, q_seg1_done, q_lbls = [], [], [], []
     t = 0.0
 
     def flush():
         nonlocal t
-        preds, seg2_ms = run_seg2_static(seg2_sess, q_feats, bs2)
-        t += seg2_ms
+        preds, seg2_ms_val = run_seg2_static(seg2_sess, q_feats, bs2)
+        t_seg2_start = t          # seg2 시작 시점 (t += seg2_ms 이전)
+        t += seg2_ms_val
         for k in range(bs2):
+            seg1_ms_k    = q_seg1_done[k] - q_ts[k]
+            queue_wait_k = t_seg2_start - q_seg1_done[k]
             records.append({
-                'rt_ms':   t - q_ts[k],
-                'exit':    2,
-                'correct': int(preds[k] == q_lbls[k]),
+                'rt_ms':         t - q_ts[k],
+                'exit':          2,
+                'correct':       int(preds[k] == q_lbls[k]),
+                'seg1_ms':       seg1_ms_k,
+                'queue_wait_ms': queue_wait_k,
+                'seg2_ms':       seg2_ms_val,
             })
-        q_feats.clear(); q_ts.clear(); q_lbls.clear()
+        q_feats.clear(); q_ts.clear(); q_seg1_done.clear(); q_lbls.clear()
 
     for i in range(0, len(samples), bs1):
         batch = samples[i : i + bs1]
@@ -161,6 +174,7 @@ def run_combo(seg1_sess, seg2_sess, samples, device, thr, bs1, bs2):
 
         ts_batch = t
         t += seg1_ms
+        t_seg1_done = t   # 이 seg1 배치 완료 시점
 
         for k in range(bs1):
             lbl  = batch[k][1]
@@ -168,10 +182,18 @@ def run_combo(seg1_sess, seg2_sess, samples, device, thr, bs1, bs2):
             pred = int(logits_np[k].argmax())
 
             if conf >= thr:
-                records.append({'rt_ms': seg1_ms, 'exit': 1, 'correct': int(pred == lbl)})
+                records.append({
+                    'rt_ms':         seg1_ms,
+                    'exit':          1,
+                    'correct':       int(pred == lbl),
+                    'seg1_ms':       seg1_ms,
+                    'queue_wait_ms': 0.0,
+                    'seg2_ms':       0.0,
+                })
             else:
-                q_feats.append(feats[k : k + 1])   # [1, 197, 768] GPU view
+                q_feats.append(feats[k : k + 1])
                 q_ts.append(ts_batch)
+                q_seg1_done.append(t_seg1_done)
                 q_lbls.append(lbl)
                 if len(q_feats) == bs2:
                     flush()
@@ -270,6 +292,60 @@ def plot_goodput(hybrid_curves: dict, plain_gp: list,
     ax.set_xlabel('SLO Threshold (ms)'); ax.set_ylabel('Goodput Ratio (hybrid / plain)')
     ax.set_title('Goodput Ratio vs PlainViT')
     ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight'); plt.close()
+    print(f'  plot: {out_path}')
+
+
+def plot_latency_decomposition(hybrid_data: dict, plain_avg_rt: float,
+                               batch_sizes, out_path,
+                               threshold, bs1, device_label):
+    """
+    bs2별 non-exit 샘플 평균 latency 분해 스택 바 차트.
+    seg1_ms | queue_wait_ms | seg2_ms 로 rt를 구성 요소별로 시각화.
+    plain avg_rt를 수평선으로 표시.
+    """
+    present = [b for b in batch_sizes if b in hybrid_data]
+    if not present:
+        return
+
+    seg1_avgs  = []
+    queue_avgs = []
+    seg2_avgs  = []
+
+    for bs2 in present:
+        nonexit = [r for r in hybrid_data[bs2] if r['exit'] == 2]
+        if not nonexit:
+            seg1_avgs.append(0); queue_avgs.append(0); seg2_avgs.append(0)
+            continue
+        seg1_avgs.append(float(np.mean([r['seg1_ms']       for r in nonexit])))
+        queue_avgs.append(float(np.mean([r['queue_wait_ms'] for r in nonexit])))
+        seg2_avgs.append(float(np.mean([r['seg2_ms']        for r in nonexit])))
+
+    x = np.arange(len(present))
+    width = 0.5
+
+    fig, ax = plt.subplots(figsize=(max(6, len(present) * 1.2 + 2), 5))
+    b1 = ax.bar(x, seg1_avgs,  width, label='seg1',       color='#4c72b0')
+    b2 = ax.bar(x, queue_avgs, width, bottom=seg1_avgs,   label='queue_wait', color='#dd8452')
+    b3 = ax.bar(x, seg2_avgs,  width,
+                bottom=[s + q for s, q in zip(seg1_avgs, queue_avgs)],
+                label='seg2', color='#55a868')
+
+    if plain_avg_rt is not None:
+        ax.axhline(plain_avg_rt, color='black', linestyle='--', linewidth=1.5,
+                   label=f'PlainViT avg rt ({plain_avg_rt:.1f}ms)')
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'bs2={b}' for b in present], fontsize=10)
+    ax.set_xlabel('Seg2 Batch Size', fontsize=11)
+    ax.set_ylabel('Avg Response Time (ms) — non-exit samples', fontsize=10)
+    ax.set_title(
+        f'Latency Decomposition — non-exit samples\n'
+        f'(thr={threshold:.2f}, {device_label}, seg1 bs={bs1})', fontsize=11)
+    ax.legend(fontsize=9)
+    ax.grid(axis='y', alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight'); plt.close()
@@ -462,26 +538,42 @@ def main():
         else:
             print(f'  discarded={n_discard}  (non-exit 폐기율 {discard_pct:.1f}%)')
 
+        # queueing delay 통계 (non-exit 샘플만)
+        nonexit_recs = [r for r in records if r['exit'] == 2]
+        if nonexit_recs:
+            avg_queue = float(np.mean([r['queue_wait_ms'] for r in nonexit_recs]))
+            p99_queue = float(np.percentile([r['queue_wait_ms'] for r in nonexit_recs], 99))
+            avg_seg2  = float(np.mean([r['seg2_ms'] for r in nonexit_recs]))
+        else:
+            avg_queue = p99_queue = avg_seg2 = 0.0
+
         print(f'  samples={n}  exit1={n_exit1/n*100:.1f}%  exit2={n_exit2/n*100:.1f}%')
         print(f'  acc={acc:.2f}%  avg_rt={avg_rt:.2f}ms  p99_rt={p99_rt:.2f}ms  '
               f'overall_tput={n/wall_time:.4f}/ms')
+        if nonexit_recs:
+            print(f'  [non-exit 분해] avg_seg1={float(np.mean([r["seg1_ms"] for r in nonexit_recs])):.2f}ms  '
+                  f'avg_queue_wait={avg_queue:.2f}ms  avg_seg2={avg_seg2:.2f}ms  '
+                  f'p99_queue_wait={p99_queue:.2f}ms')
 
         gp_values = goodput_curve(records, wall_time, args.slo_values)
         hybrid_curves[bs2]  = gp_values
         hybrid_records[bs2] = records
 
         row = {
-            'bs2':              bs2,
-            'threshold':        args.threshold,
-            'n_samples':        n,
-            'n_discarded':      n_discard,
-            'discard_pct':      round(discard_pct, 2),
-            'exit_rate_b1_pct': round(n_exit1 / n * 100, 2),
-            'exit_rate_b2_pct': round(n_exit2 / n * 100, 2),
-            'accuracy_pct':     round(acc, 4),
-            'avg_rt_ms':        round(avg_rt, 4),
-            'p99_rt_ms':        round(p99_rt, 4),
-            'overall_tput':     round(n / wall_time, 6),
+            'bs2':                bs2,
+            'threshold':          args.threshold,
+            'n_samples':          n,
+            'n_discarded':        n_discard,
+            'discard_pct':        round(discard_pct, 2),
+            'exit_rate_b1_pct':   round(n_exit1 / n * 100, 2),
+            'exit_rate_b2_pct':   round(n_exit2 / n * 100, 2),
+            'accuracy_pct':       round(acc, 4),
+            'avg_rt_ms':          round(avg_rt, 4),
+            'p99_rt_ms':          round(p99_rt, 4),
+            'overall_tput':       round(n / wall_time, 6),
+            'avg_queue_wait_ms':  round(avg_queue, 4),
+            'p99_queue_wait_ms':  round(p99_queue, 4),
+            'avg_seg2_ms':        round(avg_seg2, 4),
         }
         for slo, gp in zip(args.slo_values, gp_values):
             row[f'goodput_slo{slo:.0f}ms'] = round(gp, 6)
@@ -514,6 +606,13 @@ def main():
         plot_latency_cdf(
             hybrid_records, plain_records, args.batch_sizes, args.slo_values,
             os.path.join(out_dir, 'latency_cdf.png'),
+            args.threshold, bs1, args.device_label)
+
+        plain_avg_rt = float(np.mean([r['rt_ms'] for r in plain_records])) \
+                       if plain_records else None
+        plot_latency_decomposition(
+            hybrid_records, plain_avg_rt, args.batch_sizes,
+            os.path.join(out_dir, 'latency_decomposition.png'),
             args.threshold, bs1, args.device_label)
 
     print(f'\nDone! → {out_dir}')
