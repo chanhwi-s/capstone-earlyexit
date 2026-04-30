@@ -77,11 +77,12 @@ def run_seg2_static(sess, q_feats: list, bs2: int):
     """
     static batch=bs2 seg2 실행. len(q_feats) == bs2 보장 필요.
     Returns: (preds list[int], elapsed_ms float)
+    hidden_dim은 batch.shape에서 자동 추론 (ViT-B: 768, ViT-L: 1024)
     """
-    batch = torch.cat(q_feats, dim=0).contiguous()   # [bs2, 197, 768]
+    batch = torch.cat(q_feats, dim=0).contiguous()   # [bs2, 197, hidden_dim]
     iob = sess.io_binding()
     iob.bind_input('feat_in', device_type='cuda', device_id=0,
-                   element_type=np.float32, shape=(bs2, 197, 768),
+                   element_type=np.float32, shape=tuple(batch.shape),
                    buffer_ptr=batch.data_ptr())
     iob.bind_output('ee_logits', device_type='cuda')
     elapsed_ms = _sync_time(lambda: sess.run_with_iobinding(iob))

@@ -2,13 +2,19 @@
 export_onnx_seg2_static.py — 2-exit seg2 static batch ONNX export (goodput benchmark용)
 
 각 bs2마다 seg2_bs{N}.onnx 별도 export.
-seg1.onnx / plain_vit.onnx는 기존 export_onnx_vit_selective.py로 생성된 것 재사용.
+ViT-B/16 (기본) 및 ViT-L/16 (--model-variant large) 모두 지원.
 
 사용법:
   cd src
-  python export/export_onnx_seg2_static.py --batch-sizes 8 16 32 64
-  python export/export_onnx_seg2_static.py --batch-sizes 8 16 32 64 \\
-      --ckpt-2exit /path/to/best.pth
+  # ViT-B/16 (기본)
+  python export/export_onnx_seg2_static.py --batch-sizes 1 2 4 8 16 32 64
+  python export/export_onnx_seg2_static.py --batch-sizes 1 2 4 8 16 32 64 \\
+      --ckpt-2exit /path/to/ee_vit_2exit/best.pth
+
+  # ViT-L/16
+  python export/export_onnx_seg2_static.py --model-variant large \\
+      --batch-sizes 1 2 4 8 16 32 64 \\
+      --ckpt-2exit /path/to/ee_vit_large_2exit/best.pth
 """
 
 import os, sys, argparse
@@ -21,16 +27,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # src/export/
 
 import paths
-from export_onnx_vit_selective import (
-    ViTSegLast, load_selective_model, find_checkpoint_any_exp,
-)
+from export_onnx_vit_selective import ViTSegLast, find_checkpoint_any_exp
 
+
+# ── 모델 variant별 로더 ────────────────────────────────────────────────────────
+
+def _load_model(variant: str, exit_blocks: list, ckpt: str, device: torch.device):
+    if variant == 'large':
+        from models.ee_vit_large_selective import build_model_large
+        model = build_model_large(exit_blocks=exit_blocks, num_classes=1000)
+    else:
+        from models.ee_vit_selective import build_model
+        model = build_model(exit_blocks=exit_blocks, num_classes=1000)
+
+    state = torch.load(ckpt, map_location=device, weights_only=True)
+    model.load_state_dict(state)
+    model.eval()
+    return model.to(device)
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
 
 def export_seg2_static(model, device: torch.device, out_dir: str, bs2: int):
-    """2-exit seg2 (last segment) static batch=bs2 export."""
-    seg_last = ViTSegLast(model, seg_idx=1).to(device).eval()
-    dummy    = torch.randn(bs2, 197, 768, device=device)
-    path     = os.path.join(out_dir, f'seg2_bs{bs2}.onnx')
+    """seg2 (last segment) static batch=bs2 export.
+    hidden_dim은 model.HIDDEN_DIM에서 자동 추론 (B: 768, L: 1024).
+    """
+    hidden_dim = model.HIDDEN_DIM
+    seg_last   = ViTSegLast(model, seg_idx=1).to(device).eval()
+    dummy      = torch.randn(bs2, 197, hidden_dim, device=device)
+    path       = os.path.join(out_dir, f'seg2_bs{bs2}.onnx')
 
     with torch.no_grad():
         torch.onnx.export(
@@ -40,7 +65,7 @@ def export_seg2_static(model, device: torch.device, out_dir: str, bs2: int):
             opset_version=17,
             verbose=False,
         )
-    print(f'  seg2_bs{bs2:>4}  →  {path}  (static batch={bs2})')
+    print(f'  seg2_bs{bs2:>4}  →  {path}  (static batch={bs2}, hidden={hidden_dim})')
 
     try:
         import onnx
@@ -53,38 +78,56 @@ def export_seg2_static(model, device: torch.device, out_dir: str, bs2: int):
         print(f'             ✗ onnx.checker failed: {e}')
 
 
+# ── main ─────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(
         description='2-exit seg2 static batch ONNX export (goodput benchmark용)'
     )
+    parser.add_argument('--model-variant', type=str, default='base',
+                        choices=['base', 'large'],
+                        help='backbone variant: base=ViT-B/16, large=ViT-L/16 (기본: base)')
     parser.add_argument('--batch-sizes', type=int, nargs='+', default=[8, 16, 32, 64],
                         help='seg2 고정 batch 크기 목록 (기본: 8 16 32 64)')
     parser.add_argument('--ckpt-2exit', type=str, default=None,
-                        help='ee_vit_2exit 체크포인트 경로')
-    parser.add_argument('--exit-blocks-2', type=int, nargs='+', default=[8, 12],
-                        help='2-exit 블록 번호 (기본: 8 12)')
+                        help='체크포인트 경로 (미지정 시 최신 exp 자동 탐색)')
+    parser.add_argument('--exit-blocks-2', type=int, nargs='+', default=None,
+                        help='exit block 번호 (기본: base=[8,12], large=[12,24])')
     parser.add_argument('--out-exp', type=str, default=None,
                         help='출력 exp 디렉토리 (기본: 최신 exp 자동 선택)')
     args = parser.parse_args()
 
+    # variant별 기본값
+    if args.variant_is_large := (args.model_variant == 'large'):
+        model_dir_name  = 'ee_vit_large_2exit'
+        default_blocks  = [12, 24]
+    else:
+        model_dir_name  = 'ee_vit_2exit'
+        default_blocks  = [8, 12]
+
+    exit_blocks = args.exit_blocks_2 or default_blocks
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Device       : {device}')
-    print(f'Batch sizes  : {args.batch_sizes}')
+    print(f'Device        : {device}')
+    print(f'Model variant : ViT-{"L" if args.variant_is_large else "B"}/16  ({model_dir_name})')
+    print(f'Exit blocks   : {exit_blocks}')
+    print(f'Batch sizes   : {args.batch_sizes}')
 
     ckpt = (args.ckpt_2exit
-            or paths.latest_checkpoint('ee_vit_2exit', 'best.pth')
-            or find_checkpoint_any_exp('ee_vit_2exit', 'best.pth'))
+            or paths.latest_checkpoint(model_dir_name, 'best.pth')
+            or find_checkpoint_any_exp(model_dir_name, 'best.pth'))
     if not ckpt or not os.path.exists(ckpt):
-        print('[ERROR] ee_vit_2exit 체크포인트 없음. --ckpt-2exit 로 지정하세요.')
+        print(f'[ERROR] {model_dir_name} 체크포인트 없음. --ckpt-2exit 로 지정하세요.')
         return
 
-    print(f'체크포인트   : {ckpt}')
-    model = load_selective_model(args.exit_blocks_2, ckpt, device)
+    print(f'체크포인트    : {ckpt}')
+    model = _load_model(args.model_variant, exit_blocks, ckpt, device)
+    print(f'Hidden dim    : {model.HIDDEN_DIM}')
 
     if args.out_exp:
-        out_dir = os.path.join(args.out_exp, 'onnx', 'ee_vit_2exit')
+        out_dir = os.path.join(args.out_exp, 'onnx', model_dir_name)
     else:
-        out_dir = paths.onnx_dir('ee_vit_2exit')
+        out_dir = paths.onnx_dir(model_dir_name)
     os.makedirs(out_dir, exist_ok=True)
 
     print(f'\n[seg2 static export]  →  {out_dir}/')

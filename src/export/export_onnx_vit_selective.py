@@ -241,28 +241,36 @@ def find_checkpoint_any_exp(model_name: str, filename: str = "best.pth") -> str 
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
+def load_selective_model_large(exit_blocks: list, ckpt: str,
+                               device: torch.device):
+    """ViT-L/16 기반 SelectiveExitViTLarge 로드."""
+    from models.ee_vit_large_selective import build_model_large
+    model = build_model_large(exit_blocks=exit_blocks, num_classes=1000)
+    state = torch.load(ckpt, map_location=device, weights_only=True)
+    model.load_state_dict(state)
+    model.eval()
+    return model.to(device)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="SelectiveExitViT + PlainViT ONNX segment export"
     )
     parser.add_argument(
         "--model", type=str, default="all",
-        choices=["plain", "2exit", "3exit", "all"],
-        help="export 대상 (기본: all)"
+        choices=["plain", "2exit", "3exit", "large-2exit", "all"],
+        help="export 대상 (기본: all). large-2exit=ViT-L/16 2-exit"
     )
-    parser.add_argument("--ckpt-2exit", type=str, default=None,
-                        help="2-exit 체크포인트 경로 (다른 exp에 있을 때 직접 지정)")
-    parser.add_argument("--ckpt-3exit", type=str, default=None,
-                        help="3-exit 체크포인트 경로 (다른 exp에 있을 때 직접 지정)")
-    parser.add_argument("--exit-blocks-2", type=int, nargs="+", default=[8, 12],
-                        help="2-exit 블록 번호 (기본: 8 12)")
-    parser.add_argument("--exit-blocks-3", type=int, nargs="+", default=[6, 9, 12],
-                        help="3-exit 블록 번호 (기본: 6 9 12)")
-    parser.add_argument("--out-exp", type=str, default=None,
-                        help="ONNX 저장 exp 디렉토리 (기본: 최신 exp_* 자동 선택)")
-    parser.add_argument("--baseline-batch-size", type=int, default=8,
-                        help="seg1 / plain_vit 고정 배치 크기 (기본: 8). "
-                             "seg2+ 는 항상 dynamic batch.")
+    parser.add_argument("--ckpt-2exit",       type=str, default=None)
+    parser.add_argument("--ckpt-3exit",       type=str, default=None)
+    parser.add_argument("--ckpt-large-2exit", type=str, default=None,
+                        help="ViT-L/16 2-exit 체크포인트 경로")
+    parser.add_argument("--exit-blocks-2",       type=int, nargs="+", default=[8, 12])
+    parser.add_argument("--exit-blocks-3",       type=int, nargs="+", default=[6, 9, 12])
+    parser.add_argument("--exit-blocks-large-2", type=int, nargs="+", default=[12, 24],
+                        help="ViT-L/16 2-exit 블록 번호 (기본: 12 24)")
+    parser.add_argument("--out-exp", type=str, default=None)
+    parser.add_argument("--baseline-batch-size", type=int, default=8)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -271,7 +279,6 @@ def main():
     print(f"Export target : {args.model}")
     print(f"Baseline batch: {bsz}  (seg1/plain static, seg2+ dynamic)\n")
 
-    # ONNX 출력 exp 디렉토리 — 명시하지 않으면 최신 exp (paths.EXPERIMENTS_DIR)
     if args.out_exp:
         out_exp = os.path.realpath(args.out_exp)
         def _onnx_dir(model_name):
@@ -281,46 +288,56 @@ def main():
     else:
         _onnx_dir = paths.onnx_dir
 
-    do_plain = args.model in ("plain", "all")
-    do_2exit = args.model in ("2exit", "all")
-    do_3exit = args.model in ("3exit", "all")
+    do_plain      = args.model in ("plain", "all")
+    do_2exit      = args.model in ("2exit", "all")
+    do_3exit      = args.model in ("3exit", "all")
+    do_large_2exit = args.model in ("large-2exit",)
 
     # ── PlainViT ──
     if do_plain:
         export_plain_vit(device, _onnx_dir("plain_vit"), bsz=bsz)
 
-    # ── 2-exit ──
+    # ── ViT-B 2-exit ──
     if do_2exit:
-        # 명시 → 최신 exp → 전체 exp 탐색 순서로 체크포인트 결정
         ckpt = (args.ckpt_2exit
                 or paths.latest_checkpoint("ee_vit_2exit", "best.pth")
                 or find_checkpoint_any_exp("ee_vit_2exit", "best.pth"))
         if ckpt is None or not os.path.exists(ckpt):
             print("[ERROR] ee_vit_2exit 체크포인트 없음. --ckpt-2exit 로 지정하세요.")
-            print("  예) --ckpt-2exit experiments/exp_20260414_212957/train/ee_vit_2exit/checkpoints/best.pth")
         else:
             print(f"2-exit 체크포인트: {ckpt}")
             model = load_selective_model(args.exit_blocks_2, ckpt, device)
             export_selective_segs(model, device, _onnx_dir("ee_vit_2exit"), bsz=bsz)
             del model
 
-    # ── 3-exit ──
+    # ── ViT-B 3-exit ──
     if do_3exit:
         ckpt = (args.ckpt_3exit
                 or paths.latest_checkpoint("ee_vit_3exit", "best.pth")
                 or find_checkpoint_any_exp("ee_vit_3exit", "best.pth"))
         if ckpt is None or not os.path.exists(ckpt):
             print("[ERROR] ee_vit_3exit 체크포인트 없음. --ckpt-3exit 로 지정하세요.")
-            print("  예) --ckpt-3exit experiments/exp_20260414_213050/train/ee_vit_3exit/checkpoints/best.pth")
         else:
             print(f"3-exit 체크포인트: {ckpt}")
             model = load_selective_model(args.exit_blocks_3, ckpt, device)
             export_selective_segs(model, device, _onnx_dir("ee_vit_3exit"), bsz=bsz)
             del model
 
+    # ── ViT-L 2-exit ──
+    if do_large_2exit:
+        ckpt = (args.ckpt_large_2exit
+                or paths.latest_checkpoint("ee_vit_large_2exit", "best.pth")
+                or find_checkpoint_any_exp("ee_vit_large_2exit", "best.pth"))
+        if ckpt is None or not os.path.exists(ckpt):
+            print("[ERROR] ee_vit_large_2exit 체크포인트 없음. --ckpt-large-2exit 로 지정하세요.")
+        else:
+            print(f"ViT-L 2-exit 체크포인트: {ckpt}")
+            model = load_selective_model_large(args.exit_blocks_large_2, ckpt, device)
+            export_selective_segs(model, device, _onnx_dir("ee_vit_large_2exit"), bsz=bsz)
+            del model
+
     print(f"\n  ONNX export 완료  →  {paths.EXPERIMENTS_DIR}/onnx/")
     print("  ※ 기존 seg2.onnx / plain_vit.onnx 가 있으면 덮어씁니다.")
-    print("  다음 단계: Orin으로 전송 후 orin_vit_pipeline.sh 실행")
 
 
 if __name__ == "__main__":
