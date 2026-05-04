@@ -48,24 +48,38 @@ def _load_model(variant: str, exit_blocks: list, ckpt: str, device: torch.device
 
 # ── Export ────────────────────────────────────────────────────────────────────
 
-def export_seg2_static(model, device: torch.device, out_dir: str, bs2: int):
+def export_seg2_static(model, device: torch.device, out_dir: str, bs2: int) -> bool:
     """seg2 (last segment) static batch=bs2 export.
     hidden_dim은 model.HIDDEN_DIM에서 자동 추론 (B: 768, L: 1024).
+    OOM 발생 시 스킵하고 False 반환.
     """
     hidden_dim = model.HIDDEN_DIM
-    seg_last   = ViTSegLast(model, seg_idx=1).to(device).eval()
-    dummy      = torch.randn(bs2, 197, hidden_dim, device=device)
     path       = os.path.join(out_dir, f'seg2_bs{bs2}.onnx')
 
-    with torch.no_grad():
-        torch.onnx.export(
-            seg_last, dummy, path,
-            input_names=['feat_in'],
-            output_names=['ee_logits'],
-            opset_version=17,
-            verbose=False,
-        )
-    print(f'  seg2_bs{bs2:>4}  →  {path}  (static batch={bs2}, hidden={hidden_dim})')
+    try:
+        seg_last = ViTSegLast(model, seg_idx=1).to(device).eval()
+        dummy    = torch.randn(bs2, 197, hidden_dim, device=device)
+
+        with torch.no_grad():
+            torch.onnx.export(
+                seg_last, dummy, path,
+                input_names=['feat_in'],
+                output_names=['ee_logits'],
+                opset_version=17,
+                verbose=False,
+            )
+        print(f'  seg2_bs{bs2:>4}  →  {path}  (static batch={bs2}, hidden={hidden_dim})')
+
+    except torch.cuda.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        print(f'  seg2_bs{bs2:>4}  →  [SKIP] OOM (bs={bs2}, hidden={hidden_dim})')
+        return False
+    except RuntimeError as e:
+        if 'out of memory' in str(e).lower():
+            torch.cuda.empty_cache()
+            print(f'  seg2_bs{bs2:>4}  →  [SKIP] OOM (bs={bs2}): {e}')
+            return False
+        raise
 
     try:
         import onnx
@@ -76,6 +90,8 @@ def export_seg2_static(model, device: torch.device, out_dir: str, bs2: int):
         pass
     except Exception as e:
         print(f'             ✗ onnx.checker failed: {e}')
+
+    return True
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -132,10 +148,16 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     print(f'\n[seg2 static export]  →  {out_dir}/')
+    ok, skipped = [], []
     for bs2 in args.batch_sizes:
-        export_seg2_static(model, device, out_dir, bs2)
+        if export_seg2_static(model, device, out_dir, bs2):
+            ok.append(bs2)
+        else:
+            skipped.append(bs2)
 
-    print(f'\n완료. 생성 파일: {[f"seg2_bs{b}.onnx" for b in args.batch_sizes]}')
+    print(f'\n완료. 성공: {[f"seg2_bs{b}.onnx" for b in ok]}')
+    if skipped:
+        print(f'  스킵(OOM): bs={skipped}')
     print('다음 단계: benchmark_hybrid_2exit_goodput_5090.sh 실행')
 
 
