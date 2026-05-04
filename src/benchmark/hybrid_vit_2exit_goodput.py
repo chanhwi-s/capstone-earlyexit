@@ -353,6 +353,75 @@ def plot_latency_decomposition(hybrid_data: dict, plain_avg_rt: float,
     print(f'  plot: {out_path}')
 
 
+def plot_avg_latency_vs_batchsize(hybrid_data: dict, plain_avg_rt: float,
+                                   batch_sizes, out_path,
+                                   threshold, bs1, device_label):
+    """
+    bs2별 전체 샘플(exit1 + exit2) 평균 latency 바 차트.
+    plain avg latency를 점선으로 오버레이.
+    우측: hybrid / plain 비율.
+    """
+    present = [b for b in batch_sizes if b in hybrid_data]
+    if not present:
+        return
+
+    avg_lats = []
+    for bs2 in present:
+        rts = [r['rt_ms'] for r in hybrid_data[bs2]]
+        avg_lats.append(float(np.mean(rts)) if rts else 0.0)
+
+    x     = np.arange(len(present))
+    width = 0.5
+    tab10 = plt.get_cmap('tab10')
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig.suptitle(
+        f'Avg Latency vs Batch Size — 2-exit Hybrid ONNX  (thr={threshold:.2f}, {device_label})',
+        fontsize=12)
+
+    # ── 좌: 절대 avg latency ────────────────────────────────────────────────────
+    ax = axes[0]
+    bars = ax.bar(x, avg_lats, width, color=[tab10(i) for i in range(len(present))],
+                  alpha=0.85, label='Hybrid avg latency')
+    if plain_avg_rt is not None:
+        ax.axhline(plain_avg_rt, color='black', linestyle='--', linewidth=2,
+                   label=f'PlainViT avg ({plain_avg_rt:.1f} ms)')
+    for bar, val in zip(bars, avg_lats):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                f'{val:.1f}', ha='center', va='bottom', fontsize=9)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'bs2={b}' for b in present], fontsize=10)
+    ax.set_xlabel('Seg2 Batch Size', fontsize=11)
+    ax.set_ylabel('Avg Response Time (ms) — all samples', fontsize=11)
+    ax.set_title('Avg Latency (All Samples)', fontsize=11)
+    ax.legend(fontsize=9); ax.grid(axis='y', alpha=0.3)
+
+    # ── 우: 비율 (hybrid / plain) ────────────────────────────────────────────────
+    ax = axes[1]
+    if plain_avg_rt and plain_avg_rt > 0:
+        ratios = [lat / plain_avg_rt for lat in avg_lats]
+        ratio_bars = ax.bar(x, ratios, width,
+                            color=[tab10(i) for i in range(len(present))], alpha=0.85)
+        ax.axhline(1.0, color='black', linestyle='--', linewidth=2, label='Plain = 1.0')
+        for bar, val in zip(ratio_bars, ratios):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                    f'{val:.2f}x', ha='center', va='bottom', fontsize=9)
+        ax.set_ylabel('Latency Ratio (hybrid / plain)', fontsize=11)
+        ax.legend(fontsize=9)
+    else:
+        ax.text(0.5, 0.5, 'PlainViT data unavailable',
+                ha='center', va='center', transform=ax.transAxes, fontsize=12)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'bs2={b}' for b in present], fontsize=10)
+    ax.set_xlabel('Seg2 Batch Size', fontsize=11)
+    ax.set_title('Latency Ratio vs PlainViT', fontsize=11)
+    ax.grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight'); plt.close()
+    print(f'  plot: {out_path}')
+
+
 def plot_latency_cdf(hybrid_data: dict, plain_records,
                      batch_sizes, slo_values, out_path,
                      threshold, bs1, device_label):
@@ -614,6 +683,11 @@ def main():
         plot_latency_decomposition(
             hybrid_records, plain_avg_rt, args.batch_sizes,
             os.path.join(out_dir, 'latency_decomposition.png'),
+            args.threshold, bs1, args.device_label)
+
+        plot_avg_latency_vs_batchsize(
+            hybrid_records, plain_avg_rt, args.batch_sizes,
+            os.path.join(out_dir, 'avg_latency_vs_batchsize.png'),
             args.threshold, bs1, args.device_label)
 
     print(f'\nDone! → {out_dir}')
