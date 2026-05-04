@@ -13,8 +13,9 @@ ImageNet val 전체(50k)를 1회 프로파일링 후 threshold별 통계를 후�
   pytorch_sweep_summary.csv       — model × threshold별 핵심 수치
   pytorch_sweep_raw.json          — 모델별 전체 집계 결과
   pytorch_sweep_accuracy.png      — accuracy vs threshold
-  pytorch_sweep_latency.png       — avg/p90/p95/p99 latency vs threshold
-  pytorch_sweep_exit_rate.png     — exit block 분포 vs threshold (stacked bar)
+  pytorch_sweep_latency_*.png     — avg/p90/p95/p99 latency vs threshold (모델별)
+  pytorch_sweep_exit_rate_heatmap.png
+  pytorch_sweep_accuracy_heatmap.png
   pytorch_sweep_tradeoff.png      — accuracy vs avg latency scatter
 
 사용법:
@@ -22,19 +23,24 @@ ImageNet val 전체(50k)를 1회 프로파일링 후 threshold별 통계를 후�
   python benchmark/benchmark_pytorch_vit.py
   python benchmark/benchmark_pytorch_vit.py --thresholds 0.5 0.6 0.7 0.8 0.9
   python benchmark/benchmark_pytorch_vit.py --skip-plain --out-dir /tmp/results
+  python benchmark/benchmark_pytorch_vit.py --skip-large        # ViT-L 제외
+  python benchmark/benchmark_pytorch_vit.py --skip-2exit --skip-3exit  # ViT-L만
 
 인자:
-  --data-root      ImageNet 루트 디렉토리 (기본: /home2/imagenet)
-  --thresholds     sweep할 threshold 목록 (기본: 0.5 0.6 0.7 0.75 0.80 0.85 0.90)
-  --exit-blocks-2  2-exit 블록 번호 (기본: 8 12)
-  --exit-blocks-3  3-exit 블록 번호 (기본: 6 9 12)
-  --skip-plain     PlainViT 제외
-  --skip-2exit     2-exit 제외
-  --skip-3exit     3-exit 제외
-  --warmup         GPU warmup 샘플 수 (기본: 200)
-  --num-workers    DataLoader 워커 수 (기본: 8)
-  --out-dir        결과 저장 디렉토리 (기본: auto)
-  --device-label   플롯/테이블 제목 디바이스 이름 (기본: RTX 5090)
+  --data-root           ImageNet 루트 디렉토리 (기본: /home2/imagenet)
+  --thresholds          sweep할 threshold 목록 (기본: 0.5 0.6 0.7 0.75 0.80 0.85 0.90)
+  --exit-blocks-2       ViT-B 2-exit 블록 번호 (기본: 8 12)
+  --exit-blocks-3       ViT-B 3-exit 블록 번호 (기본: 6 9 12)
+  --exit-blocks-large   ViT-L 2-exit 블록 번호 (기본: 12 24)
+  --skip-plain          PlainViT-B 제외
+  --skip-2exit          ViT-B 2-exit 제외
+  --skip-3exit          ViT-B 3-exit 제외
+  --skip-large          ViT-L 2-exit 제외 (체크포인트 없으면 자동 스킵)
+  --skip-plain-large    PlainViT-L 기준선 제외 (ViT-L sweep 시 사용)
+  --warmup              GPU warmup 샘플 수 (기본: 200)
+  --num-workers         DataLoader 워커 수 (기본: 8)
+  --out-dir             결과 저장 디렉토리 (기본: auto)
+  --device-label        플롯/테이블 제목 디바이스 이름 (기본: RTX 5090)
 """
 
 import os
@@ -58,6 +64,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths
 from models.plain_vit import build_model as build_plain
 from models.ee_vit_selective import build_model as build_selective
+from models.ee_vit_large_selective import build_model_large
 
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -275,17 +282,25 @@ def save_csv(rows: list, path: str):
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
 
-_EE_COLORS = {'EE-ViT-2exit': 'darkorange', 'EE-ViT-3exit': 'seagreen'}
+_EE_COLORS = {
+    'EE-ViT-2exit':   'darkorange',
+    'EE-ViT-3exit':   'seagreen',
+    'EE-ViT-L-2exit': 'mediumpurple',
+}
 
 
-def plot_accuracy(ee_sweeps: dict, plain_acc: float, out_path: str, device_label: str):
+def plot_accuracy(ee_sweeps: dict, plain_sts: dict, out_path: str, device_label: str):
+    """plain_sts: {label: accuracy_float}  예) {'PlainViT-B': 0.812, 'PlainViT-L': 0.856}"""
+    plain_colors = {'PlainViT-B': 'steelblue', 'PlainViT-L': 'cornflowerblue'}
     fig, ax = plt.subplots(figsize=(9, 5))
     for name, rows in ee_sweeps.items():
         thrs = [r['threshold'] for r in rows]
         accs = [r['accuracy'] * 100 for r in rows]
         ax.plot(thrs, accs, 'o-', label=name, color=_EE_COLORS.get(name, 'gray'))
-    ax.axhline(plain_acc * 100, ls='--', color='steelblue',
-               label=f'PlainViT ({plain_acc*100:.2f}%)')
+    for label, acc in plain_sts.items():
+        color = plain_colors.get(label, 'steelblue')
+        ax.axhline(acc * 100, ls='--', color=color,
+                   label=f'{label} ({acc*100:.2f}%)')
     ax.set_xlabel('Threshold')
     ax.set_ylabel('Top-1 Accuracy (%)')
     ax.set_title(f'Accuracy vs Threshold  ({device_label}, PyTorch, ImageNet val)')
@@ -345,41 +360,49 @@ def plot_accuracy_heatmap(ee_sweeps: dict, out_path: str, device_label: str):
     print(f"  accuracy heatmap: {out_path}")
 
 
-def plot_latency_split(ee_sweeps: dict, plain_st: dict, out_dir: str, device_label: str):
-    """2-exit / 3-exit 각각 PlainViT와 1:1 비교하는 별도 latency plot."""
+def plot_latency_split(ee_sweeps: dict, plain_sts: dict, out_dir: str, device_label: str):
+    """모델별 PlainViT와 1:1 비교하는 별도 latency plot.
+
+    plain_sts: {label: stat_dict}  예) {'PlainViT-B': {...}, 'PlainViT-L': {...}}
+    ViT-L EE 모델은 PlainViT-L 기준선을 사용하고, 나머지는 PlainViT-B를 사용한다.
+    """
     metrics = [
-        ('avg_ms', '-',  1.0, 'avg'),
+        ('avg_ms', '-',  1.0,  'avg'),
         ('p90_ms', '--', 0.85, 'p90'),
         ('p95_ms', '-.', 0.85, 'p95'),
         ('p99_ms', ':',  0.85, 'p99'),
     ]
-    plain_color = 'steelblue'
+    plain_colors = {'PlainViT-B': 'steelblue', 'PlainViT-L': 'cornflowerblue'}
 
     for name, rows in ee_sweeps.items():
         fig, ax = plt.subplots(figsize=(10, 5))
         thrs  = [r['threshold'] for r in rows]
         color = _EE_COLORS.get(name, 'gray')
 
-        # PlainViT: 수평선 (threshold 없음)
-        if plain_st:
-            for metric, ls, alpha, tag in metrics:
-                ax.axhline(plain_st[metric], ls=ls, color=plain_color,
-                           alpha=alpha, label=f'PlainViT ({tag})')
+        # 대응 기준선 선택: ViT-L EE → PlainViT-L, 나머지 → PlainViT-B
+        plain_key = 'PlainViT-L' if '-L-' in name else 'PlainViT-B'
+        ref_st = plain_sts.get(plain_key) or (next(iter(plain_sts.values())) if plain_sts else None)
 
-        # EE 모델: threshold별 변화 선
+        if ref_st:
+            ref_color = plain_colors.get(plain_key, 'steelblue')
+            for metric, ls, alpha, tag in metrics:
+                ax.axhline(ref_st[metric], ls=ls, color=ref_color,
+                           alpha=alpha, label=f'{plain_key} ({tag})')
+
         for metric, ls, alpha, tag in metrics:
             vals = [r[metric] for r in rows]
             ax.plot(thrs, vals, ls=ls, color=color,
                     alpha=alpha, label=f'{name} ({tag})')
 
+        ref_label = plain_key if ref_st else 'Plain'
         ax.set_xlabel('Threshold')
         ax.set_ylabel('Latency (ms)')
-        ax.set_title(f'Latency vs Threshold — PlainViT vs {name}  ({device_label})')
+        ax.set_title(f'Latency vs Threshold — {ref_label} vs {name}  ({device_label})')
         ax.legend(fontsize=8, ncol=2)
         ax.grid(alpha=0.3)
         plt.tight_layout()
 
-        suffix   = '2exit' if '2exit' in name else '3exit'
+        suffix   = name.lower().replace('ee-vit-', '').replace('-', '_')
         out_path = os.path.join(out_dir, f'pytorch_sweep_latency_{suffix}.png')
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
@@ -423,11 +446,15 @@ def plot_exit_rate_heatmap(ee_sweeps: dict, out_path: str, device_label: str):
     print(f"  exit rate heatmap: {out_path}")
 
 
-def plot_tradeoff(ee_sweeps: dict, plain_st: dict, out_path: str, device_label: str):
+def plot_tradeoff(ee_sweeps: dict, plain_sts: dict, out_path: str, device_label: str):
+    """plain_sts: {label: stat_dict}  여러 plain 모델을 함께 표시한다."""
+    plain_colors  = {'PlainViT-B': 'steelblue', 'PlainViT-L': 'cornflowerblue'}
+    plain_markers = {'PlainViT-B': 'D', 'PlainViT-L': 's'}
     fig, ax = plt.subplots(figsize=(8, 6))
-    if plain_st:
-        ax.scatter(plain_st['avg_ms'], plain_st['accuracy'] * 100,
-                   s=150, color='steelblue', marker='D', label='PlainViT', zorder=5)
+    for label, st in plain_sts.items():
+        ax.scatter(st['avg_ms'], st['accuracy'] * 100,
+                   s=150, color=plain_colors.get(label, 'steelblue'),
+                   marker=plain_markers.get(label, 'D'), label=label, zorder=5)
     for name, rows in ee_sweeps.items():
         color = _EE_COLORS.get(name, 'gray')
         xs = [r['avg_ms'] for r in rows]
@@ -472,18 +499,23 @@ def main():
     parser = argparse.ArgumentParser(
         description='PlainViT vs SelectiveExitViT PyTorch threshold sweep (ImageNet val)'
     )
-    parser.add_argument('--data-root',     type=str,   default='/home2/imagenet')
-    parser.add_argument('--thresholds',    type=float, nargs='+',
+    parser.add_argument('--data-root',          type=str,   default='/home2/imagenet')
+    parser.add_argument('--thresholds',          type=float, nargs='+',
                         default=[0.5, 0.6, 0.7, 0.75, 0.80, 0.85, 0.90])
-    parser.add_argument('--exit-blocks-2', type=int,   nargs='+', default=[8, 12])
-    parser.add_argument('--exit-blocks-3', type=int,   nargs='+', default=[6, 9, 12])
-    parser.add_argument('--skip-plain',    action='store_true')
-    parser.add_argument('--skip-2exit',    action='store_true')
-    parser.add_argument('--skip-3exit',    action='store_true')
-    parser.add_argument('--warmup',        type=int,   default=200)
-    parser.add_argument('--num-workers',   type=int,   default=8)
-    parser.add_argument('--out-dir',       type=str,   default=None)
-    parser.add_argument('--device-label',  type=str,   default='RTX 5090')
+    parser.add_argument('--exit-blocks-2',       type=int,   nargs='+', default=[8, 12])
+    parser.add_argument('--exit-blocks-3',       type=int,   nargs='+', default=[6, 9, 12])
+    parser.add_argument('--exit-blocks-large',   type=int,   nargs='+', default=[12, 24])
+    parser.add_argument('--skip-plain',          action='store_true')
+    parser.add_argument('--skip-2exit',          action='store_true')
+    parser.add_argument('--skip-3exit',          action='store_true')
+    parser.add_argument('--skip-large',          action='store_true',
+                        help='ViT-L/16 2-exit 스킵 (체크포인트 없으면 자동 스킵)')
+    parser.add_argument('--skip-plain-large',    action='store_true',
+                        help='PlainViT-L 기준선 스킵 (ViT-L sweep 시)')
+    parser.add_argument('--warmup',              type=int,   default=200)
+    parser.add_argument('--num-workers',         type=int,   default=8)
+    parser.add_argument('--out-dir',             type=str,   default=None)
+    parser.add_argument('--device-label',        type=str,   default='RTX 5090')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -493,45 +525,50 @@ def main():
     )
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"Device     : {device}  ({args.device_label})")
-    print(f"Thresholds : {args.thresholds}")
-    print(f"Output     : {out_dir}\n")
+    # ViT-L checkpoint 자동 탐지
+    ckpt_large = paths.latest_checkpoint('ee_vit_large_2exit')
+    run_large  = (not args.skip_large) and (ckpt_large is not None)
 
-    loader   = build_val_loader(args.data_root, args.num_workers)
-    all_rows = []
-    all_json = {}
+    print(f"Device       : {device}  ({args.device_label})")
+    print(f"Thresholds   : {args.thresholds}")
+    print(f"ViT-L 2exit  : {'포함 (' + ckpt_large + ')' if run_large else '스킵'}")
+    print(f"Output       : {out_dir}\n")
+
+    loader    = build_val_loader(args.data_root, args.num_workers)
+    all_rows  = []
+    all_json  = {}
     ee_sweeps = {}
-    plain_st  = None
+    plain_sts = {}   # {label: stat_dict}
 
-    # ── PlainViT ──────────────────────────────────────────────────────────────
+    # ── PlainViT-B ────────────────────────────────────────────────────────────
     if not args.skip_plain:
-        print("[PlainViT] loading timm pretrained ViT-B/16 ...")
+        print("[PlainViT-B] loading timm pretrained ViT-B/16 ...")
         model = build_plain().to(device)
         model.eval()
-        print(f"[PlainViT] profiling {len(loader):,} samples (warmup={args.warmup}) ...")
+        print(f"[PlainViT-B] profiling {len(loader):,} samples (warmup={args.warmup}) ...")
         lats, correct = profile_plain(model, loader, device, args.warmup)
         del model
         torch.cuda.empty_cache()
 
-        plain_st = plain_stats(lats, correct)
-        row = {'model': 'PlainViT', **plain_st,
-               'accuracy_pct': plain_st['accuracy'] * 100}
+        st_b = plain_stats(lats, correct)
+        plain_sts['PlainViT-B'] = st_b
+        row = {'model': 'PlainViT-B', **st_b, 'accuracy_pct': st_b['accuracy'] * 100}
         all_rows.append(row)
-        all_json['plain'] = plain_st
-        print(f"  → acc={plain_st['accuracy']*100:.2f}%  "
-              f"avg={plain_st['avg_ms']:.2f}ms  p99={plain_st['p99_ms']:.2f}ms\n")
+        all_json['plain_b'] = st_b
+        print(f"  → acc={st_b['accuracy']*100:.2f}%  "
+              f"avg={st_b['avg_ms']:.2f}ms  p99={st_b['p99_ms']:.2f}ms\n")
 
-    # ── 2-exit ────────────────────────────────────────────────────────────────
+    # ── 2-exit (ViT-B) ────────────────────────────────────────────────────────
     if not args.skip_2exit:
         ckpt = paths.latest_checkpoint('ee_vit_2exit')
         if ckpt is None:
             print("[WARN] ee_vit_2exit checkpoint 없음 → skip")
         else:
-            print(f"[2-exit] checkpoint: {ckpt}")
+            print(f"[EE-ViT-B 2exit] checkpoint: {ckpt}")
             model = build_selective(args.exit_blocks_2).to(device)
             load_checkpoint(model, ckpt)
             model.eval()
-            print(f"[2-exit] profiling {len(loader):,} samples ...")
+            print(f"[EE-ViT-B 2exit] profiling {len(loader):,} samples ...")
             confs, preds, lats, labels = profile_selective(
                 model, loader, device, args.warmup)
             del model
@@ -551,17 +588,17 @@ def main():
             all_json['2exit'] = sweep_rows
             print()
 
-    # ── 3-exit ────────────────────────────────────────────────────────────────
+    # ── 3-exit (ViT-B) ────────────────────────────────────────────────────────
     if not args.skip_3exit:
         ckpt = paths.latest_checkpoint('ee_vit_3exit')
         if ckpt is None:
             print("[WARN] ee_vit_3exit checkpoint 없음 → skip")
         else:
-            print(f"[3-exit] checkpoint: {ckpt}")
+            print(f"[EE-ViT-B 3exit] checkpoint: {ckpt}")
             model = build_selective(args.exit_blocks_3).to(device)
             load_checkpoint(model, ckpt)
             model.eval()
-            print(f"[3-exit] profiling {len(loader):,} samples ...")
+            print(f"[EE-ViT-B 3exit] profiling {len(loader):,} samples ...")
             confs, preds, lats, labels = profile_selective(
                 model, loader, device, args.warmup)
             del model
@@ -581,6 +618,60 @@ def main():
             all_json['3exit'] = sweep_rows
             print()
 
+    # ── PlainViT-L (ViT-L 포함 시 기준선) ────────────────────────────────────
+    if run_large and not args.skip_plain_large:
+        import timm as _timm
+        print("[PlainViT-L] loading timm pretrained ViT-L/16 ...")
+
+        class _PlainViTL(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = _timm.create_model(
+                    'vit_large_patch16_224', pretrained=True, num_classes=1000)
+            def forward(self, x):
+                return self.model(x)
+
+        model = _PlainViTL().to(device)
+        model.eval()
+        print(f"[PlainViT-L] profiling {len(loader):,} samples (warmup={args.warmup}) ...")
+        lats, correct = profile_plain(model, loader, device, args.warmup)
+        del model
+        torch.cuda.empty_cache()
+
+        st_l = plain_stats(lats, correct)
+        plain_sts['PlainViT-L'] = st_l
+        row = {'model': 'PlainViT-L', **st_l, 'accuracy_pct': st_l['accuracy'] * 100}
+        all_rows.append(row)
+        all_json['plain_l'] = st_l
+        print(f"  → acc={st_l['accuracy']*100:.2f}%  "
+              f"avg={st_l['avg_ms']:.2f}ms  p99={st_l['p99_ms']:.2f}ms\n")
+
+    # ── 2-exit (ViT-L) ────────────────────────────────────────────────────────
+    if run_large:
+        print(f"[EE-ViT-L 2exit] checkpoint: {ckpt_large}")
+        model = build_model_large(args.exit_blocks_large).to(device)
+        load_checkpoint(model, ckpt_large)
+        model.eval()
+        print(f"[EE-ViT-L 2exit] profiling {len(loader):,} samples ...")
+        confs, preds, lats, labels = profile_selective(
+            model, loader, device, args.warmup)
+        del model
+        torch.cuda.empty_cache()
+
+        sweep_rows = []
+        for thr in args.thresholds:
+            st  = sweep_stats(confs, preds, lats, labels, args.exit_blocks_large, thr)
+            row = {'model': 'EE-ViT-L-2exit', **st,
+                   'accuracy_pct': st['accuracy'] * 100}
+            all_rows.append(row)
+            sweep_rows.append(st)
+            rate_s = '  '.join(f'{x:.1f}%' for x in st['exit_rate'])
+            print(f"  thr={thr:.2f}  acc={st['accuracy']*100:.2f}%  "
+                  f"avg={st['avg_ms']:.2f}ms  exit=[{rate_s}]")
+        ee_sweeps['EE-ViT-L-2exit'] = sweep_rows
+        all_json['large_2exit'] = sweep_rows
+        print()
+
     # ── Save & Plot ───────────────────────────────────────────────────────────
     print("Saving ...")
     save_json(all_json, os.path.join(out_dir, 'pytorch_sweep_raw.json'))
@@ -588,15 +679,14 @@ def main():
 
     dl = args.device_label
     if ee_sweeps:
-        plain_acc = plain_st['accuracy'] if plain_st else 0.0
-        plot_accuracy(ee_sweeps, plain_acc,
+        plot_accuracy(ee_sweeps, plain_sts,
                       os.path.join(out_dir, 'pytorch_sweep_accuracy.png'), dl)
         plot_accuracy_heatmap(ee_sweeps,
                               os.path.join(out_dir, 'pytorch_sweep_accuracy_heatmap.png'), dl)
-        plot_latency_split(ee_sweeps, plain_st, out_dir, dl)
+        plot_latency_split(ee_sweeps, plain_sts, out_dir, dl)
         plot_exit_rate_heatmap(ee_sweeps,
                                os.path.join(out_dir, 'pytorch_sweep_exit_rate_heatmap.png'), dl)
-        plot_tradeoff(ee_sweeps, plain_st,
+        plot_tradeoff(ee_sweeps, plain_sts,
                       os.path.join(out_dir, 'pytorch_sweep_tradeoff.png'), dl)
 
     print_table(all_rows, dl)
