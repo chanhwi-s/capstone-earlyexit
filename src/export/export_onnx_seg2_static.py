@@ -98,7 +98,8 @@ def main():
     args = parser.parse_args()
 
     # variant별 기본값
-    if args.variant_is_large := (args.model_variant == 'large'):
+    variant_is_large = (args.model_variant == 'large')
+    if variant_is_large:
         model_dir_name  = 'ee_vit_large_2exit'
         default_blocks  = [12, 24]
     else:
@@ -109,7 +110,7 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Device        : {device}')
-    print(f'Model variant : ViT-{"L" if args.variant_is_large else "B"}/16  ({model_dir_name})')
+    print(f'Model variant : ViT-{"L" if variant_is_large else "B"}/16  ({model_dir_name})')
     print(f'Exit blocks   : {exit_blocks}')
     print(f'Batch sizes   : {args.batch_sizes}')
 
