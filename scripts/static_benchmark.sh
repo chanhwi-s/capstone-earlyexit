@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-#  benchmark_hybrid_2exit_goodput_large_5090.sh
+#  static_benchmark.sh
 #  ViT-L/16 2-exit goodput benchmark (학습 완료 후 실행)
 #
 #  4단계 체인 (자동 순서 실행):

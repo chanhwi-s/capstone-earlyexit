@@ -30,12 +30,6 @@ try:
 except ImportError:
     raise ImportError('onnxruntime-gpu 필요: pip install onnxruntime-gpu')
 
-try:
-    from analysis.plot_latency_dist import plot_overview, plot_combined, plot_per_bs2
-    _DIST_AVAILABLE = True
-except ImportError:
-    _DIST_AVAILABLE = False
-
 
 # ── ONNX Runtime 헬퍼 ─────────────────────────────────────────────────────────
 
@@ -696,36 +690,6 @@ def main():
             os.path.join(out_dir, 'avg_latency_vs_batchsize.png'),
             args.threshold, bs1, args.device_label)
 
-        if _DIST_AVAILABLE:
-            plain_rts = [r['rt_ms'] for r in plain_records] if plain_records else None
-            dist_data = {
-                bs2: {
-                    'exit1':   [r['rt_ms'] for r in recs if r['exit'] == 1],
-                    'exit2':   [r['rt_ms'] for r in recs if r['exit'] == 2],
-                    'all':     [r['rt_ms'] for r in recs],
-                    'n':       len(recs),
-                    'n_exit1': sum(1 for r in recs if r['exit'] == 1),
-                    'n_exit2': sum(1 for r in recs if r['exit'] == 2),
-                }
-                for bs2, recs in hybrid_records.items()
-            }
-            bs2_list = [b for b in args.batch_sizes if b in dist_data]
-
-            plot_overview(
-                dist_data, plain_rts, bs2_list,
-                os.path.join(out_dir, 'latency_dist_overview.png'),
-                args.threshold, args.device_label)
-
-            plot_combined(
-                dist_data, plain_rts, bs2_list,
-                os.path.join(out_dir, 'latency_dist_combined.png'),
-                args.threshold, args.device_label)
-
-            for bs2 in bs2_list:
-                plot_per_bs2(
-                    dist_data, plain_rts, bs2,
-                    os.path.join(out_dir, f'latency_dist_bs{bs2}.png'),
-                    args.threshold, args.device_label)
 
     print(f'\nDone! → {out_dir}')
 
