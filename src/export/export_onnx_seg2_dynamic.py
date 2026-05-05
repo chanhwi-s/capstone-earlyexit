@@ -52,6 +52,7 @@ def export_seg2_dynamic(model, device: torch.device, out_dir: str) -> str:
             output_names=['ee_logits'],
             dynamic_axes={'feat_in': {0: 'batch'}, 'ee_logits': {0: 'batch'}},
             opset_version=17,
+            dynamo=False,
             verbose=False,
         )
     print(f'  seg2_dynamic  →  {path}  (dynamic batch, hidden={hidden_dim})')
