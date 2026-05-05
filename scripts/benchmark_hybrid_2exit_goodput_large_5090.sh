@@ -3,10 +3,11 @@
 #  benchmark_hybrid_2exit_goodput_large_5090.sh
 #  ViT-L/16 2-exit goodput benchmark (학습 완료 후 실행)
 #
-#  3단계 체인 (자동 순서 실행):
+#  4단계 체인 (자동 순서 실행):
 #    Step 1. seg1.onnx + plain_vit_large.onnx export
 #    Step 2. seg2_bs{N}.onnx static export (bs2별)
 #    Step 3. goodput benchmark (SLO 기반)
+#    Step 4. accuracy vs threshold sweep (all-exit2 기준선 대비)
 #
 #  사용법:
 #    bash scripts/benchmark_hybrid_2exit_goodput_large_5090.sh --threshold 0.80
@@ -23,6 +24,9 @@
 #    WARMUP               웜업 seg1 배치 수 (기본: 50)
 #    SKIP_EXPORT=1        Step1+2 export 스킵 (이미 .onnx 있을 때)
 #    SKIP_PLAIN=1         PlainViT-L 기준선 측정 스킵
+#    SKIP_ACC_SWEEP=1     Step4 accuracy sweep 스킵
+#    ACC_N_SAMPLES        accuracy sweep 샘플 수 (기본: N_SAMPLES)
+#    ACC_THRESHOLDS       accuracy sweep threshold 목록 (기본: 0.50~0.99 자동)
 #    CKPT                 ee_vit_large_2exit 체크포인트 경로 직접 지정
 # ============================================================
 
@@ -44,6 +48,9 @@ SLO_VALUES="${SLO_VALUES:-10 20 30 50 75 100 200 300 400 500}"
 WARMUP="${WARMUP:-50}"
 SKIP_EXPORT="${SKIP_EXPORT:-0}"
 SKIP_PLAIN="${SKIP_PLAIN:-0}"
+SKIP_ACC_SWEEP="${SKIP_ACC_SWEEP:-0}"
+ACC_N_SAMPLES="${ACC_N_SAMPLES:-$N_SAMPLES}"
+ACC_THRESHOLDS="${ACC_THRESHOLDS:-}"
 
 echo "============================================"
 echo "  ViT-L/16 2-exit Goodput Benchmark (RTX 5090)"
@@ -123,3 +130,25 @@ python benchmark/hybrid_vit_2exit_goodput.py \
     --device-label          "RTX 5090 (ViT-L)" \
     $EXTRA_ARGS \
     "$@"
+
+# ── Step 4: Accuracy vs Threshold sweep ────────────────────────────────────────
+if [[ "$SKIP_ACC_SWEEP" != "1" ]]; then
+    echo ""
+    echo ">>> [Step 4] Accuracy vs Threshold sweep ..."
+    ACC_CKPT_ARG=""
+    [[ -n "${CKPT:-}" ]] && ACC_CKPT_ARG="--ckpt $CKPT"
+    ACC_THR_ARG=""
+    [[ -n "$ACC_THRESHOLDS" ]] && ACC_THR_ARG="--thresholds $ACC_THRESHOLDS"
+
+    python benchmark/sweep_accuracy_vs_threshold.py \
+        --data-root     "$DATA_ROOT/imagenet" \
+        --n-samples     "$ACC_N_SAMPLES" \
+        --seed          "$SEED" \
+        --batch-size    64 \
+        --device-label  "RTX 5090 (ViT-L)" \
+        $ACC_CKPT_ARG \
+        $ACC_THR_ARG
+    echo ""
+else
+    echo ">>> [Step 4] SKIP_ACC_SWEEP=1 — accuracy sweep 스킵"
+fi
